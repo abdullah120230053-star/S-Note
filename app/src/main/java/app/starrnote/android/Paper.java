@@ -19,10 +19,15 @@ final class Paper {
     interface Images { Bitmap get(String name); }
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-    private final TextPaint type = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+    private final TextPaint type = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
     private final PlannerTemplates planner = new PlannerTemplates();
 
     void draw(Canvas canvas, Notebook.Page page, Bitmap background, Images images, boolean export) {
+        draw(canvas, page, background, images, export, null, null);
+    }
+
+    void draw(Canvas canvas, Notebook.Page page, Bitmap background, Images images, boolean export,
+              Bitmap pdfDetail, RectF detailRegion) {
         canvas.save();
         if (!page.infinite()) canvas.clipRect(0, 0, page.width, page.height);
         canvas.drawColor(page.paperColor != 0 && !PlannerTemplates.isPlanner(page.paper)
@@ -32,6 +37,10 @@ final class Paper {
             canvas.drawBitmap(background, null, new RectF(0, 0, page.width, page.height), paint);
         } else {
             ruling(canvas, page);
+        }
+        if (pdfDetail != null) {
+            paint.setColor(Color.WHITE);
+            canvas.drawBitmap(pdfDetail, null, detailRegion, paint);
         }
         for (Notebook.Layer layer : page.layers) {
             if (!layer.visible) continue;

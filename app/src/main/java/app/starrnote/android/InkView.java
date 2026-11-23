@@ -37,6 +37,16 @@ final class InkView extends View {
     private final Set<Notebook.Mark> erased = new HashSet<>();
     private final List<Notebook.Point> lasso = new ArrayList<>();
     private Bitmap background;
+    interface PdfDetail {
+        void render(android.graphics.RectF region, float scale, java.util.function.Consumer<Bitmap> result);
+    }
+    PdfDetail pdfDetail;
+    private Bitmap detailBitmap;
+    private android.graphics.RectF detailRegion;
+    private android.graphics.RectF requestedRegion;
+    private float detailScale, requestedScale;
+    private boolean detailPending;
+    private final Runnable renderDetail = this::renderPdfDetail;
     private Notebook.Mark draft;
     private String layer;
     private float zoom = 1;
@@ -139,8 +149,53 @@ final class InkView extends View {
     private float localX(float x) { return (x - originX()) / scale(); }
     private float localY(float y) { return (y - originY()) / scale(); }
 
+    private android.graphics.RectF visiblePdfRegion(float margin) {
+        return new android.graphics.RectF(Math.max(0, localX(-margin)), Math.max(0, localY(-margin)),
+                Math.min(page.width, localX(getWidth() + margin)), Math.min(page.height, localY(getHeight() + margin)));
+    }
+
+    private void requestPdfDetail() {
+        if (pdfDetail == null || background == null || detailPending) return;
+        android.graphics.RectF view = visiblePdfRegion(0);
+        float currentScale = scale();
+        if (view.isEmpty() || currentScale <= 1.1f * background.getWidth() / page.width
+                || (detailRegion != null && detailRegion.contains(view) && currentScale <= detailScale * 1.08f)) return;
+        removeCallbacks(renderDetail);
+        postDelayed(renderDetail, 85);
+    }
+
+    private void renderPdfDetail() {
+        if (!isAttachedToWindow()) return;
+        android.graphics.RectF region = visiblePdfRegion(64);
+        if (region.isEmpty()) return;
+        float resolution = Math.min(scale() * 1.2f, 2400 / Math.max(region.width(), region.height()));
+        if (region.equals(requestedRegion) && resolution == requestedScale) return;
+        requestedRegion = region;
+        requestedScale = resolution;
+        detailPending = true;
+        pdfDetail.render(region, resolution, bitmap -> {
+            detailPending = false;
+            if (!isAttachedToWindow()) {
+                if (bitmap != null) bitmap.recycle();
+                return;
+            }
+            if (bitmap != null) {
+                detailBitmap = bitmap;
+                detailRegion = region;
+                detailScale = resolution;
+            }
+            invalidate();
+        });
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        removeCallbacks(renderDetail);
+        super.onDetachedFromWindow();
+    }
+
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+        requestPdfDetail();
         canvas.drawColor(charcoalWorkspace ? 0xff353535 : 0xffdce5e0);
         canvas.save();
         canvas.translate(originX(), originY());
@@ -150,7 +205,7 @@ final class InkView extends View {
             overlay.setStyle(Paint.Style.FILL);
             canvas.drawRect(3, 7, page.width + 5, page.height + 7, overlay);
         }
-        paper.draw(canvas, page, background, images, charcoalWorkspace);
+        paper.draw(canvas, page, background, images, charcoalWorkspace, detailBitmap, detailRegion);
         if (!page.infinite()) canvas.clipRect(0, 0, page.width, page.height);
         if (draft != null) paper.drawMark(canvas, draft, images);
         if (erasing && eraseMode == 2) {

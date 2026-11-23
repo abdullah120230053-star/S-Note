@@ -186,6 +186,23 @@ final class Library {
 
     Bitmap image(String name) { return image(file(name), 2000); }
 
+    Bitmap pdfDetail(Notebook.Page page, android.graphics.RectF region, float scale) throws IOException {
+        try (ParcelFileDescriptor descriptor = ParcelFileDescriptor.open(file(page.background), ParcelFileDescriptor.MODE_READ_ONLY);
+             PdfRenderer pdf = new PdfRenderer(descriptor);
+             PdfRenderer.Page source = pdf.openPage(page.pdfIndex)) {
+            int width = Math.max(1, Math.round(region.width() * scale));
+            int height = Math.max(1, Math.round(region.height() * scale));
+            float sx = width / region.width(), sy = height / region.height();
+            Bitmap detail = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            detail.eraseColor(Color.WHITE);
+            android.graphics.Matrix transform = new android.graphics.Matrix();
+            transform.setScale(sx * page.width / source.getWidth(), sy * page.height / source.getHeight());
+            transform.postTranslate(-region.left * sx, -region.top * sy);
+            source.render(detail, null, transform, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+            return detail;
+        }
+    }
+
     private Bitmap image(File file, int maxEdge) {
         BitmapFactory.Options options = new BitmapFactory.Options();
         options.inJustDecodeBounds = true;

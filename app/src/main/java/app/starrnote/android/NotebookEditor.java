@@ -295,8 +295,7 @@ final class NotebookEditor implements InkView.Listener {
         ui.pad(toolbar, right ? 3 : 7, compact && right ? 28 : 4, right ? 3 : 7, 7);
         if (right) toolDock.addView(toolbar, new ScrollView.LayoutParams(-1, -2));
         else root.addView(toolbar, 2);
-        toolDock.setVisibility(right && !focused ? View.VISIBLE : View.GONE);
-        toolbar.setVisibility(focused ? View.GONE : View.VISIBLE);
+        toolDock.setVisibility(right ? View.VISIBLE : View.GONE);
         drawToolbar();
     }
 
@@ -497,6 +496,9 @@ final class NotebookEditor implements InkView.Listener {
         ink = new InkView(host, page, this::image, this);
         ink.charcoalWorkspace = compact;
         InkView view = ink;
+        if (page.pdfIndex >= 0) {
+            view.pdfDetail = (region, scale, callback) -> host.readPdfDetail(page, region, scale, callback);
+        }
         ink.selectTool(selectedTool);
         loadBrushSettings();
         zoomChanged(1);
@@ -950,12 +952,10 @@ final class NotebookEditor implements InkView.Listener {
         focused = true;
         for (int i = 0; i < root.getChildCount(); i++) {
             View view = root.getChildAt(i);
-            if (view != workspace) view.setVisibility(View.GONE);
+            if (view != workspace && view != toolbar && view != navigation) view.setVisibility(View.GONE);
         }
         exitFocusButton.setVisibility(View.VISIBLE);
-        navigation.setVisibility(View.GONE);
         footer.setVisibility(View.GONE);
-        toolDock.setVisibility(View.GONE);
         updatePageRail();
         syncSystemBars();
     }

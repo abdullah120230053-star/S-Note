@@ -730,6 +730,19 @@ public final class MainActivity extends Activity {
         readBackground(page, 0, success, true);
     }
 
+    void readPdfDetail(Notebook.Page page, android.graphics.RectF region, float scale, Consumer<Bitmap> result) {
+        work.execute(() -> {
+            Bitmap detail;
+            try {
+                detail = library.pdfDetail(page, region, scale);
+            } catch (IOException | RuntimeException failure) {
+                detail = null;
+            }
+            Bitmap rendered = detail;
+            runOnUiThread(() -> result.accept(rendered));
+        });
+    }
+
     void readBackground(Notebook.Page page, int maxEdge, Consumer<Bitmap> result, boolean showError) {
         if (page.background.isEmpty()) return;
         work.execute(() -> {
