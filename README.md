@@ -6,7 +6,7 @@ StarrNote is a native Android notebook for handwriting, PDF annotation, and plan
 
 ## Editor
 
-![Animated screenshot tour showing notebook tabs, fountain pen settings, the color palette, and eraser controls](docs/media/editor-tour.gif)
+![Animated screenshot tour showing notebook tabs, fountain pen settings, eraser controls, and infinite canvas zoom](docs/media/editor-tour.gif)
 
 - Pan and zoom the infinite canvas. Wide landscape screens have a right-side drawing toolbar.
 - Choose from 16 brushes. Adjust pressure sensitivity on the fountain and calligraphy pens, and save brush settings to the Pen Box.
