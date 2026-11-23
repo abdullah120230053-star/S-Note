@@ -1,0 +1,14 @@
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#176961</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#F4F3EB</item>
+        <item name="android:navigationBarColor">#173D39</item>
+        <item name="android:windowBackground">#F4F3EB</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+    <style name="CharcoalPanel" parent="android:style/Theme.Material">
+        <item name="android:colorAccent">#62BBD1</item>
+    </style>
+</resources>
