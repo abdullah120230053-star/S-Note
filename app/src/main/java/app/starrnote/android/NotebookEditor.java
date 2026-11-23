@@ -62,7 +62,9 @@ final class NotebookEditor implements InkView.Listener {
     private final PageBrowser pageBrowser;
     private final ListView pageRail;
     private boolean showPageRail = true;
-    private boolean toolsOnRight;
+    private enum ToolbarEdge { TOP, BOTTOM, LEFT, RIGHT }
+    private ToolbarEdge toolbarEdge = ToolbarEdge.TOP;
+    private boolean verticalTools;
     private final LruCache<String, Bitmap> assets = new LruCache<>(18 * 1024 * 1024) {
         @Override protected int sizeOf(String key, Bitmap value) { return value.getAllocationByteCount(); }
     };
@@ -83,6 +85,10 @@ final class NotebookEditor implements InkView.Listener {
         this.host = host;
         this.note = note;
         ui = host.ui;
+        pen = host.prefs.getString("brush.selected.pen", Brushes.PEN);
+        pencil = host.prefs.getString("brush.selected.pencil", Brushes.PENCIL);
+        highlighter = host.prefs.getString("brush.selected.highlighter", Brushes.HIGHLIGHTER);
+        selectedTool = host.prefs.getString("brush.selected.current", pen);
         compact = StudioStyle.tabletWorkspace(host) && ui.charcoal;
         root = ui.column();
         root.setBackgroundColor(ui.page);
@@ -134,6 +140,7 @@ final class NotebookEditor implements InkView.Listener {
         root.addView(header);
 
         toolbar = ui.row();
+        toolbar.setOnLongClickListener(v -> showToolbarPositions(null, null));
         ui.pad(toolbar, 7, 3, 7, 7);
         root.addView(toolbar);
 
@@ -286,17 +293,44 @@ final class NotebookEditor implements InkView.Listener {
     void updateLayout() {
         syncSystemBars();
         updatePageRail();
-        boolean right = supportsRightDock() && host.prefs.getBoolean("editor.rightDock", true);
-        if (right == toolsOnRight) return;
-        toolsOnRight = right;
+        ToolbarEdge fallback = supportsRightDock() && host.prefs.getBoolean("editor.rightDock", true)
+                ? ToolbarEdge.RIGHT : ToolbarEdge.TOP;
+        ToolbarEdge edge = ToolbarEdge.valueOf(host.prefs.getString("editor.toolbarEdge", fallback.name()));
+        if (edge == toolbarEdge) return;
+        toolbarEdge = edge;
+        verticalTools = edge == ToolbarEdge.LEFT || edge == ToolbarEdge.RIGHT;
         ((android.view.ViewGroup) toolbar.getParent()).removeView(toolbar);
-        toolbar.setOrientation(right ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
-        toolbar.setGravity(right ? Gravity.TOP | Gravity.CENTER_HORIZONTAL : Gravity.CENTER_VERTICAL);
-        ui.pad(toolbar, right ? 3 : 7, compact && right ? 28 : 4, right ? 3 : 7, 7);
-        if (right) toolDock.addView(toolbar, new ScrollView.LayoutParams(-1, -2));
-        else root.addView(toolbar, 2);
-        toolDock.setVisibility(right ? View.VISIBLE : View.GONE);
+        toolbar.setOrientation(verticalTools ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
+        toolbar.setGravity(verticalTools ? Gravity.TOP | Gravity.CENTER_HORIZONTAL : Gravity.CENTER_VERTICAL);
+        ui.pad(toolbar, verticalTools ? 3 : 7, compact && verticalTools ? 28 : 4, verticalTools ? 3 : 7, 7);
+        if (verticalTools) {
+            workspace.removeView(toolDock);
+            workspace.addView(toolDock, edge == ToolbarEdge.LEFT ? 0 : workspace.getChildCount(),
+                    new LinearLayout.LayoutParams(ui.dp(compact ? 44 : 55), -1));
+            toolDock.addView(toolbar, new ScrollView.LayoutParams(-1, -2));
+        } else if (edge == ToolbarEdge.BOTTOM) {
+            root.addView(toolbar, root.indexOfChild(workspace) + 1);
+        } else {
+            root.addView(toolbar, 2);
+        }
+        toolDock.setVisibility(verticalTools ? View.VISIBLE : View.GONE);
         drawToolbar();
+    }
+
+    private boolean showToolbarPositions(String settings, Runnable action) {
+        Map<String, Runnable> positions = new LinkedHashMap<>();
+        if (settings != null) positions.put(settings, action);
+        positions.put("Top", () -> dockToolbar(ToolbarEdge.TOP));
+        positions.put("Bottom", () -> dockToolbar(ToolbarEdge.BOTTOM));
+        positions.put("Left", () -> dockToolbar(ToolbarEdge.LEFT));
+        positions.put("Right", () -> dockToolbar(ToolbarEdge.RIGHT));
+        host.options("Move toolbar", positions);
+        return true;
+    }
+
+    private void dockToolbar(ToolbarEdge edge) {
+        host.prefs.edit().putString("editor.toolbarEdge", edge.name()).apply();
+        updateLayout();
     }
 
     void updatePageRail() {
@@ -318,32 +352,29 @@ final class NotebookEditor implements InkView.Listener {
     private void drawToolbar() {
         toolbar.removeAllViews();
         buttons.clear();
-        if (toolsOnRight) {
+        if (verticalTools) {
             toolButton("Undo", "Undo", () -> ink.undo());
             toolButton("Redo", "Redo", () -> ink.redo());
         }
         for (String tool : TOOLS) {
             ImageButton button = toolButton(tool, tool, () -> tapTool(tool));
             if (Brushes.isInk(tool) || Brushes.isMarker(tool)) {
-                button.setOnLongClickListener(v -> {
-                    brushOptions(toolbarTool(tool));
-                    return true;
-                });
+                button.setOnLongClickListener(v -> showToolbarPositions("Brush settings", () -> brushOptions(toolbarTool(tool))));
             } else if (tool.equals("Eraser")) {
-                button.setOnLongClickListener(v -> { eraserSettings(); return true; });
+                button.setOnLongClickListener(v -> showToolbarPositions("Eraser settings", this::eraserSettings));
             }
             buttons.put(tool, button);
         }
-        if (toolsOnRight) {
+        if (verticalTools) {
             toolButton("Image", "Add an image", host::chooseImage);
             toolButton("Insert text", "Text tool", () -> setTool("Text"));
         }
         toolsButton = toolButton("Tools", "More writing tools", this::tools);
-        if (!toolsOnRight) {
+        if (!verticalTools) {
             toolButton("Undo", "Undo", () -> ink.undo());
             toolButton("Redo", "Redo", () -> ink.redo());
         }
-        if (compact && toolsOnRight) {
+        if (compact && verticalTools) {
             toolButton("Pen box", "Pen box", this::penBox);
             for (int index : new int[]{0, 3, 2, 1, 4}) {
                 int swatch = COLORS[index];
@@ -388,10 +419,11 @@ final class NotebookEditor implements InkView.Listener {
 
     private ImageButton toolButton(String icon, String description, Runnable action) {
         ImageButton button = iconButton(icon, description, action);
-        LinearLayout.LayoutParams params = toolsOnRight ? new LinearLayout.LayoutParams(-1, ui.dp(compact ? 38 : 44))
+        button.setOnLongClickListener(v -> showToolbarPositions(null, null));
+        LinearLayout.LayoutParams params = verticalTools ? new LinearLayout.LayoutParams(-1, ui.dp(compact ? 38 : 44))
                 : new LinearLayout.LayoutParams(0, ui.dp(44), 1);
         if (toolbar.getChildCount() > 0) {
-            if (toolsOnRight) params.topMargin = ui.dp(compact ? 0 : 4);
+            if (verticalTools) params.topMargin = ui.dp(compact ? 0 : 4);
             else params.setMarginStart(ui.dp(4));
         }
         toolbar.addView(button, params);
@@ -455,9 +487,13 @@ final class NotebookEditor implements InkView.Listener {
     private void setTool(String tool) {
         if (tool.equals("Eraser") && !selectedTool.equals("Eraser")) toolBeforeEraser = selectedTool;
         selectedTool = tool;
-        if (Brushes.isPen(tool)) pen = tool;
-        if (Brushes.isPencil(tool)) pencil = tool;
-        if (Brushes.isMarker(tool)) highlighter = tool;
+        if (Brushes.isInk(tool) || Brushes.isMarker(tool)) {
+            android.content.SharedPreferences.Editor brushes = host.prefs.edit().putString("brush.selected.current", tool);
+            if (Brushes.isPen(tool)) brushes.putString("brush.selected.pen", pen = tool);
+            if (Brushes.isPencil(tool)) brushes.putString("brush.selected.pencil", pencil = tool);
+            if (Brushes.isMarker(tool)) brushes.putString("brush.selected.highlighter", highlighter = tool);
+            brushes.apply();
+        }
         ink.selectTool(tool);
         loadBrushSettings();
         updateToolbar();
@@ -814,7 +850,7 @@ final class NotebookEditor implements InkView.Listener {
         window.setBackgroundDrawable(ui.block(ui.surface, 12, 0));
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
         android.view.WindowManager.LayoutParams placement = window.getAttributes();
-        placement.gravity = Gravity.TOP | Gravity.END;
+        placement.gravity = Gravity.TOP | (toolbarEdge == ToolbarEdge.LEFT ? Gravity.START : Gravity.END);
         placement.x = ui.dp(leftOfTools ? 389 : 53);
         placement.y = ui.dp(46);
         placement.width = ui.dp(324);
@@ -900,10 +936,7 @@ final class NotebookEditor implements InkView.Listener {
     private void more() {
         Map<String, Runnable> options = new LinkedHashMap<>();
         options.put("Focus mode", this::enterFocus);
-        if (supportsRightDock()) options.put(toolsOnRight ? "Use top toolbar" : "Dock tools on right", () -> {
-            host.prefs.edit().putBoolean("editor.rightDock", !toolsOnRight).apply();
-            updateLayout();
-        });
+        options.put("Move toolbar", () -> showToolbarPositions(null, null));
         options.put("Document grid", this::openGrid);
         options.put("Note overview", this::noteOverview);
         options.put(note.deviceLock ? "Remove device lock" : "Lock notebook", () -> host.deviceLock(note));
@@ -968,7 +1001,7 @@ final class NotebookEditor implements InkView.Listener {
         exitFocusButton.setVisibility(View.GONE);
         navigation.setVisibility(View.VISIBLE);
         footer.setVisibility(View.VISIBLE);
-        toolDock.setVisibility(toolsOnRight ? View.VISIBLE : View.GONE);
+        toolDock.setVisibility(verticalTools ? View.VISIBLE : View.GONE);
         toolbar.setVisibility(View.VISIBLE);
         updatePageRail();
         syncSystemBars();

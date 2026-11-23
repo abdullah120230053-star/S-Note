@@ -225,9 +225,55 @@ final class Paper {
             }
             case Brushes.CHARCOAL, Brushes.PASTEL -> drawDryPigment(canvas, mark);
             case Brushes.WATERCOLOR -> drawWash(canvas, mark);
+            case Brushes.FOUNTAIN -> drawFountainNib(canvas, mark);
             default -> drawPath(canvas, mark, Brushes.isInk(mark.tool));
         }
         paint.setStyle(Paint.Style.FILL);
+    }
+
+    private void drawFountainNib(Canvas canvas, Notebook.Mark mark) {
+        List<Notebook.Point> points = mark.points;
+        Notebook.Point start = points.get(0);
+        paint.setStyle(Paint.Style.FILL);
+        boolean moved = false;
+        for (Notebook.Point point : points) {
+            if (point.x() != start.x() || point.y() != start.y()) {
+                moved = true;
+                break;
+            }
+        }
+        if (!moved) {
+            float radius = Brushes.pressureWidth(mark, start, start) * .5f;
+            canvas.save();
+            canvas.rotate(-35, start.x(), start.y());
+            canvas.drawOval(start.x() - radius, start.y() - radius * .38f,
+                    start.x() + radius, start.y() + radius * .38f, paint);
+            canvas.restore();
+            return;
+        }
+        android.graphics.Path outline = new android.graphics.Path();
+        float[] edge = new float[points.size() * 2];
+        for (int i = 0; i < points.size(); i++) {
+            Notebook.Point point = points.get(i);
+            Notebook.Point previous = points.get(Math.max(0, i - 1));
+            Notebook.Point next = points.get(Math.min(points.size() - 1, i + 1));
+            float dx = next.x() - previous.x(), dy = next.y() - previous.y();
+            float length = (float) Math.hypot(dx, dy);
+            float nx = length > 0 ? -dy / length : 0;
+            float ny = length > 0 ? dx / length : 1;
+            // Project the flattened, angled nib onto the normal of the stroke.
+            float projection = .819f * nx - .574f * ny;
+            float breadth = (float) Math.sqrt(.145f + .855f * projection * projection);
+            float taper = Math.min(1, .48f + .26f * Math.min(i, points.size() - i - 1));
+            float radius = Brushes.pressureWidth(mark, point, point) * .6f * breadth * taper;
+            float x = point.x() + nx * radius, y = point.y() + ny * radius;
+            if (i == 0) outline.moveTo(x, y); else outline.lineTo(x, y);
+            edge[i * 2] = point.x() - nx * radius;
+            edge[i * 2 + 1] = point.y() - ny * radius;
+        }
+        for (int i = points.size() - 1; i >= 0; i--) outline.lineTo(edge[i * 2], edge[i * 2 + 1]);
+        outline.close();
+        canvas.drawPath(outline, paint);
     }
 
     private void drawWash(Canvas canvas, Notebook.Mark mark) {
