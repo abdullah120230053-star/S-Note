@@ -43,11 +43,8 @@ final class NotebookEditor implements InkView.Listener {
     private final Notebook note;
     final LinearLayout root;
     final TextView title;
-    private final TextView pageInfo;
     private final FrameLayout stage;
     private final LinearLayout toolbar;
-    private final LinearLayout navigation;
-    private final LinearLayout footer;
     private final boolean compact;
     private final ScrollView toolDock;
     private final LinearLayout tabStrip;
@@ -56,12 +53,13 @@ final class NotebookEditor implements InkView.Listener {
     private final HorizontalScrollView shortcutScroll;
     private final LinearLayout shortcutBar;
     private final TextView zoomLevel;
+    private final Runnable hideZoomLevel = this::hideZoom;
     private final ImageButton handButton;
     private final TextView selection;
     private final TextView recording;
     private final PageBrowser pageBrowser;
     private final ListView pageRail;
-    private boolean showPageRail = true;
+    private boolean showPageRail;
     private enum ToolbarEdge { TOP, BOTTOM, LEFT, RIGHT }
     private ToolbarEdge toolbarEdge = ToolbarEdge.TOP;
     private boolean verticalTools;
@@ -121,42 +119,40 @@ final class NotebookEditor implements InkView.Listener {
         title.setEllipsize(android.text.TextUtils.TruncateAt.END);
         ui.pad(title, 6, 0, 6, 0);
         title.setOnClickListener(v -> host.noteOptions(note));
+        LinearLayout upperBar = ui.column();
         if (compact) {
             headerIcon(header, "Back", "Library", host::showLibrary);
             headerIcon(header, "Image", "Insert image", host::chooseImage);
             headerIcon(header, "Audio recordings", "Audio recordings", host::audio);
+            headerIcon(header, "Zoom in", "New page", this::newPage);
+            handButton = headerIcon(header, "Hand", "Pan canvas", this::toggleHand);
             header.addView(new View(host), new LinearLayout.LayoutParams(0, ui.dp(36), 1));
             headerIcon(header, "Document grid", "Document grid", this::openGrid);
             headerIcon(header, "Layers", "Layers", this::layers);
-            headerIcon(header, "Pages", "Pages", this::browsePages);
+            headerIcon(header, "Pages", "Pages", this::pages);
             headerIcon(header, "Eraser settings", "Customize shortcuts", this::customizeShortcuts);
             headerIcon(header, "Tools", "More", this::more);
         } else {
             ui.chip(header, ui.button("Library", false, host::showLibrary));
             header.addView(title, new LinearLayout.LayoutParams(0, ui.dp(44), 1));
-            ui.chip(header, ui.button("Pages", false, this::browsePages));
+            ui.chip(header, ui.button("Pages", false, this::pages));
             header.addView(ui.button("More", false, this::more));
+            LinearLayout actions = ui.row();
+            ui.pad(actions, 9, 0, 9, 0);
+            headerIcon(actions, "Image", "Insert image", host::chooseImage);
+            headerIcon(actions, "Audio recordings", "Audio recordings", host::audio);
+            headerIcon(actions, "Zoom in", "New page", this::newPage);
+            handButton = headerIcon(actions, "Hand", "Pan canvas", this::toggleHand);
+            upperBar.addView(header);
+            upperBar.addView(actions);
         }
-        root.addView(header);
+        if (compact) upperBar.addView(header);
+        root.addView(upperBar);
 
         toolbar = ui.row();
         toolbar.setOnLongClickListener(v -> showToolbarPositions(null, null));
         ui.pad(toolbar, 7, 3, 7, 7);
         root.addView(toolbar);
-
-        navigation = ui.row();
-        navigation.setGravity(Gravity.CENTER);
-        ui.pad(navigation, 0, 0, 0, 5);
-        handButton = zoomButton(navigation, "Hand", "Pan canvas", this::toggleHand);
-        zoomButton(navigation, "Zoom out", "Zoom out", () -> ink.zoomBy(1 / 1.25f));
-        zoomLevel = ui.button("", false, () -> ink.fit());
-        zoomLevel.setMinHeight(0);
-        LinearLayout.LayoutParams zoomParams = new LinearLayout.LayoutParams(ui.dp(88), ui.dp(34));
-        zoomParams.setMarginEnd(ui.dp(4));
-        navigation.addView(zoomLevel, zoomParams);
-        zoomButton(navigation, "Zoom in", "Zoom in", () -> ink.zoomBy(1.25f));
-        if (!compact) zoomButton(navigation, "Image", "Insert image", host::chooseImage);
-        if (!compact) root.addView(navigation);
 
         shortcutScroll = new HorizontalScrollView(host);
         shortcutScroll.setHorizontalScrollBarEnabled(false);
@@ -195,35 +191,15 @@ final class NotebookEditor implements InkView.Listener {
         exitParams.setMargins(ui.dp(10), ui.dp(10), 0, 0);
         stage.addView(exitFocusButton, exitParams);
 
-        footer = ui.row();
-        ui.pad(footer, 9, 7, 9, 7);
-        if (compact) headerIcon(footer, "Back", "Previous", () -> go(note.currentPage - 1));
-        else ui.chip(footer, ui.button("Previous", false, () -> go(note.currentPage - 1)));
-        pageInfo = ui.button("", false, this::pages);
-        LinearLayout.LayoutParams pageParams = new LinearLayout.LayoutParams(0, -2, 1);
-        pageParams.rightMargin = ui.dp(7);
-        footer.addView(pageInfo, pageParams);
-        if (compact) {
-            headerIcon(footer, "Forward", "Next", () -> go(note.currentPage + 1));
-            headerIcon(footer, "Zoom in", "+ Page", this::newPage);
-        } else {
-            ui.chip(footer, ui.button("Next", false, () -> go(note.currentPage + 1)));
-            footer.addView(ui.button("+ Page", true, this::newPage));
-        }
-        if (compact) {
-            FrameLayout.LayoutParams navigationParams = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
-            navigationParams.setMargins(0, ui.dp(12), ui.dp(16), 0);
-            stage.addView(navigation, navigationParams);
-            ui.pad(footer, 5, 0, 0, 0);
-            pageParams.width = -2;
-            pageParams.weight = 0;
-            FrameLayout.LayoutParams footerParams = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            footerParams.bottomMargin = ui.dp(8);
-            stage.addView(footer, footerParams);
-        } else root.addView(footer);
+        zoomLevel = ui.text("", 14, 0xffffffff);
+        zoomLevel.setGravity(Gravity.CENTER);
+        zoomLevel.setBackground(ui.block(0xdd202020, 8, 0));
+        zoomLevel.setVisibility(View.GONE);
+        FrameLayout.LayoutParams zoomParams = new FrameLayout.LayoutParams(ui.dp(68), ui.dp(34), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        zoomParams.topMargin = ui.dp(12);
+        stage.addView(zoomLevel, zoomParams);
 
         drawToolbar();
-        showPageRail = !supportsRightDock();
         updateLayout();
         refreshPage();
         refreshShortcuts();
@@ -413,8 +389,10 @@ final class NotebookEditor implements InkView.Listener {
         return button;
     }
 
-    private void headerIcon(LinearLayout row, String icon, String description, Runnable action) {
-        row.addView(iconButton(icon, description, action), new LinearLayout.LayoutParams(ui.dp(43), ui.dp(38)));
+    private ImageButton headerIcon(LinearLayout row, String icon, String description, Runnable action) {
+        ImageButton button = iconButton(icon, description, action);
+        row.addView(button, new LinearLayout.LayoutParams(ui.dp(43), ui.dp(38)));
+        return button;
     }
 
     private ImageButton toolButton(String icon, String description, Runnable action) {
@@ -523,8 +501,12 @@ final class NotebookEditor implements InkView.Listener {
     @Override public void zoomChanged(float zoom) {
         String percent = Math.round(zoom * 100) + "%";
         zoomLevel.setText(percent);
-        zoomLevel.setContentDescription(percent + " zoom. Fit canvas");
+        zoomLevel.setVisibility(View.VISIBLE);
+        zoomLevel.removeCallbacks(hideZoomLevel);
+        zoomLevel.postDelayed(hideZoomLevel, 950);
     }
+
+    private void hideZoom() { zoomLevel.setVisibility(View.GONE); }
 
     void refreshPage() {
         if (ink != null) stage.removeView(ink);
@@ -537,12 +519,11 @@ final class NotebookEditor implements InkView.Listener {
         }
         ink.selectTool(selectedTool);
         loadBrushSettings();
-        zoomChanged(1);
+        zoomLevel.removeCallbacks(hideZoomLevel);
+        hideZoom();
         applyPreferences();
         stage.addView(ink, 0, new FrameLayout.LayoutParams(-1, -1));
         selectionChanged(0);
-        pageInfo.setText((note.currentPage + 1) + " / " + note.pages.size());
-        pageInfo.setContentDescription("Pages, " + (note.currentPage + 1) + " of " + note.pages.size());
         pageBrowser.refresh(true);
         host.readBackground(page, image -> {
             if (ink == view && host.editor == this) view.setBackgroundPage(image);
@@ -615,6 +596,7 @@ final class NotebookEditor implements InkView.Listener {
     private void pages() {
         Map<String, Runnable> choices = new LinkedHashMap<>();
         choices.put("Go to page", () -> pageBrowser.openDialog(this::go));
+        if (canShowPageRail()) choices.put(showPageRail ? "Hide page sidebar" : "Show page sidebar", this::browsePages);
         choices.put("Add page", this::newPage);
         choices.put("Import pages", host::importPages);
         choices.put("Copy page", () -> {
@@ -952,6 +934,12 @@ final class NotebookEditor implements InkView.Listener {
         options.put("Export page image", () -> host.export(false));
         options.put("Watch reference video", host::video);
         options.put("Materials library", this::materials);
+        options.put("Zoom controls", () -> {
+            Map<String, Runnable> zoom = new LinkedHashMap<>();
+            zoom.put("Zoom in", () -> ink.zoomBy(1.25f));
+            zoom.put("Zoom out", () -> ink.zoomBy(1 / 1.25f));
+            host.options("Zoom controls", zoom);
+        });
         options.put("Fit page", ink::fit);
         if (note.current().infinite()) options.put("Fit written area", ink::frameInk);
         options.put("Magnifier", ink::magnify);
@@ -985,10 +973,9 @@ final class NotebookEditor implements InkView.Listener {
         focused = true;
         for (int i = 0; i < root.getChildCount(); i++) {
             View view = root.getChildAt(i);
-            if (view != workspace && view != toolbar && view != navigation) view.setVisibility(View.GONE);
+            if (view != workspace && view != toolbar) view.setVisibility(View.GONE);
         }
         exitFocusButton.setVisibility(View.VISIBLE);
-        footer.setVisibility(View.GONE);
         updatePageRail();
         syncSystemBars();
     }
@@ -999,8 +986,6 @@ final class NotebookEditor implements InkView.Listener {
         for (int i = 0; i < root.getChildCount(); i++) root.getChildAt(i).setVisibility(View.VISIBLE);
         refreshShortcuts();
         exitFocusButton.setVisibility(View.GONE);
-        navigation.setVisibility(View.VISIBLE);
-        footer.setVisibility(View.VISIBLE);
         toolDock.setVisibility(verticalTools ? View.VISIBLE : View.GONE);
         toolbar.setVisibility(View.VISIBLE);
         updatePageRail();

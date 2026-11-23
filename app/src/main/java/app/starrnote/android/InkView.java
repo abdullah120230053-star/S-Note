@@ -94,7 +94,6 @@ final class InkView extends View {
         zoom = state.zoom();
         panX = state.panX();
         panY = state.panY();
-        listener.zoomChanged(zoom);
         invalidate();
     }
 
@@ -104,10 +103,11 @@ final class InkView extends View {
     }
 
     void fit() {
+        boolean changedZoom = zoom != 1;
         zoom = 1;
         panX = panY = 0;
         invalidate();
-        listener.zoomChanged(zoom);
+        if (changedZoom) listener.zoomChanged(zoom);
     }
 
     void magnify() { zoomBy(1.5f); }
