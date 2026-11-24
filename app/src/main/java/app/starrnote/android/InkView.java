@@ -28,6 +28,9 @@ final class InkView extends View {
 
     private final Notebook.Page page;
     private final Paper paper = new Paper();
+    private final InfiniteRecording infiniteRecording = android.os.Build.VERSION.SDK_INT >= 29
+            ? new InfiniteRecording() : null;
+    private boolean paperChanged = true;
     private final Paper.Images images;
     private final Listener listener;
     private final Paint overlay = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -190,22 +193,68 @@ final class InkView extends View {
 
     @Override protected void onDetachedFromWindow() {
         removeCallbacks(renderDetail);
+        if (android.os.Build.VERSION.SDK_INT >= 29 && infiniteRecording != null) infiniteRecording.discard();
         super.onDetachedFromWindow();
+    }
+
+    boolean isInteracting() { return pointerId != -1; }
+
+    void invalidatePaper() {
+        paperChanged = true;
+        invalidate();
+    }
+
+    @android.annotation.TargetApi(29)
+    private final class InfiniteRecording {
+        private final android.graphics.RenderNode node = new android.graphics.RenderNode("Infinite page");
+        private float left, top, zoom;
+        private int width, height;
+
+        void draw(Canvas canvas, float x, float y, float scale) {
+            int viewWidth = getWidth(), viewHeight = getHeight();
+            if (paperChanged || !node.hasDisplayList() || x != left || y != top || scale != zoom
+                    || viewWidth != width || viewHeight != height) {
+                node.setPosition(0, 0, viewWidth, viewHeight);
+                Canvas recording = node.beginRecording(viewWidth, viewHeight);
+                try {
+                    recording.clipRect(0, 0, viewWidth, viewHeight);
+                    recording.translate(x, y);
+                    recording.scale(scale, scale);
+                    paper.draw(recording, page, null, images, charcoalWorkspace);
+                } finally {
+                    node.endRecording();
+                }
+                left = x;
+                top = y;
+                zoom = scale;
+                width = viewWidth;
+                height = viewHeight;
+                paperChanged = false;
+            }
+            canvas.drawRenderNode(node);
+        }
+
+        void discard() { node.discardDisplayList(); }
     }
 
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         requestPdfDetail();
         canvas.drawColor(charcoalWorkspace ? 0xff353535 : 0xffdce5e0);
+        float x = originX(), y = originY(), scale = scale();
+        boolean reusePaper = android.os.Build.VERSION.SDK_INT >= 29 && infiniteRecording != null
+                && canvas.isHardwareAccelerated() && page.infinite()
+                && getWidth() > 0 && getHeight() > 0;
+        if (android.os.Build.VERSION.SDK_INT >= 29 && reusePaper) infiniteRecording.draw(canvas, x, y, scale);
         canvas.save();
-        canvas.translate(originX(), originY());
-        canvas.scale(scale(), scale());
+        canvas.translate(x, y);
+        canvas.scale(scale, scale);
         if (!page.infinite()) {
             overlay.setColor(0x210d302b);
             overlay.setStyle(Paint.Style.FILL);
             canvas.drawRect(3, 7, page.width + 5, page.height + 7, overlay);
         }
-        paper.draw(canvas, page, background, images, charcoalWorkspace, detailBitmap, detailRegion);
+        if (!reusePaper) paper.draw(canvas, page, background, images, charcoalWorkspace, detailBitmap, detailRegion);
         if (!page.infinite()) canvas.clipRect(0, 0, page.width, page.height);
         if (draft != null) paper.drawMark(canvas, draft, images);
         if (erasing && eraseMode == 2) {
@@ -222,7 +271,9 @@ final class InkView extends View {
         overlay.setColor(0xff05796e);
         overlay.setStrokeWidth(2 / scale());
         overlay.setStyle(Paint.Style.STROKE);
-        overlay.setPathEffect(new DashPathEffect(new float[]{6 / scale(), 4 / scale()}, 0));
+        if (!selected.isEmpty() || !lasso.isEmpty()) {
+            overlay.setPathEffect(new DashPathEffect(new float[]{6 / scale, 4 / scale}, 0));
+        }
         for (Notebook.Mark mark : selected) {
             RectF bounds = paper.bounds(mark);
             bounds.inset(-7, -7);
@@ -405,7 +456,17 @@ final class InkView extends View {
         if (erasing && eraseMode == 2) erase(eraseStartX, eraseStartY, eraseRadius);
         if (dragSelection && moved) {
             snapshot();
-            for (Notebook.Mark mark : selected) mark.move(dragX, dragY);
+            Set<Notebook.Mark> movedMarks = new LinkedHashSet<>();
+            for (int i = 0; i < page.marks.size(); i++) {
+                Notebook.Mark mark = page.marks.get(i);
+                if (!selected.contains(mark)) continue;
+                Notebook.Mark replacement = mark.copy();
+                replacement.move(dragX, dragY);
+                page.marks.set(i, replacement);
+                movedMarks.add(replacement);
+            }
+            selected.clear();
+            selected.addAll(movedMarks);
             finishChange();
         } else if (!lasso.isEmpty()) {
             select(x, y);
@@ -439,7 +500,9 @@ final class InkView extends View {
             if (!page.layer(mark.layer).visible || !paper.hit(mark, x, y, 13)) continue;
             if (mark.tool.equals("Tape") && !page.layer(mark.layer).locked) {
                 snapshot();
-                mark.revealed = !mark.revealed;
+                Notebook.Mark replacement = mark.copy();
+                replacement.revealed = !mark.revealed;
+                page.marks.set(i, replacement);
                 finishChange();
                 return;
             }
@@ -530,6 +593,7 @@ final class InkView extends View {
             erased.add(mark);
             page.marks.remove(i);
             if (eraseMode == 1) page.marks.addAll(i, pieces);
+            paperChanged = true;
         }
     }
 
@@ -597,8 +661,12 @@ final class InkView extends View {
     void editText(Notebook.Mark mark, String value, String address) {
         if (!selected.contains(mark) || !editable(mark)) return;
         snapshot();
-        mark.value = value;
-        mark.link = address;
+        Notebook.Mark replacement = mark.copy();
+        replacement.value = value;
+        replacement.link = address;
+        page.marks.set(page.marks.indexOf(mark), replacement);
+        selected.remove(mark);
+        selected.add(replacement);
         finishChange();
     }
 
@@ -681,7 +749,7 @@ final class InkView extends View {
 
     private void step(ArrayDeque<List<Notebook.Mark>> from, ArrayDeque<List<Notebook.Mark>> to) {
         if (from.isEmpty()) return;
-        to.push(copy(page.marks));
+        to.push(new ArrayList<>(page.marks));
         page.marks.clear();
         page.marks.addAll(from.pop());
         clearSelection();
@@ -689,7 +757,8 @@ final class InkView extends View {
     }
 
     private void snapshot() {
-        undo.push(copy(page.marks));
+        // Committed marks are replaced when edited, so undo history can share them.
+        undo.push(new ArrayList<>(page.marks));
         if (undo.size() > 30) undo.removeLast();
         redo.clear();
     }

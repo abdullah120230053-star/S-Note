@@ -20,6 +20,45 @@ final class Paper {
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final TextPaint type = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+    private final java.util.WeakHashMap<Notebook.Mark, InkGeometry> inkGeometry = new java.util.WeakHashMap<>();
+    private final android.util.LruCache<InkGeometry, android.graphics.Path> fountainPaths =
+            new android.util.LruCache<>(24_000) {
+                @Override protected int sizeOf(InkGeometry entry, android.graphics.Path path) { return entry.count; }
+            };
+    private final android.graphics.Rect clip = new android.graphics.Rect();
+    private float[] gridPoints = new float[0];
+    private int gridStartX, gridStartY, gridColumns, gridRows, gridStep;
+
+    private static final class InkGeometry {
+        int count;
+        Notebook.Point first, last;
+        final RectF bounds = new RectF();
+    }
+
+    private InkGeometry geometry(Notebook.Mark mark) {
+        List<Notebook.Point> points = mark.points;
+        int size = points.size();
+        Notebook.Point first = points.get(0), last = points.get(size - 1);
+        InkGeometry entry = inkGeometry.get(mark);
+        if (entry != null && entry.count == size && entry.first == first && entry.last == last) return entry;
+        if (entry == null) {
+            entry = new InkGeometry();
+            inkGeometry.put(mark, entry);
+        }
+        fountainPaths.remove(entry);
+        entry.count = size;
+        entry.first = first;
+        entry.last = last;
+        entry.bounds.set(first.x(), first.y(), first.x(), first.y());
+        for (Notebook.Point point : points) {
+            entry.bounds.left = Math.min(entry.bounds.left, point.x());
+            entry.bounds.top = Math.min(entry.bounds.top, point.y());
+            entry.bounds.right = Math.max(entry.bounds.right, point.x());
+            entry.bounds.bottom = Math.max(entry.bounds.bottom, point.y());
+        }
+        entry.bounds.inset(-2 * mark.thickness, -2 * mark.thickness);
+        return entry;
+    }
     private final PlannerTemplates planner = new PlannerTemplates();
 
     void draw(Canvas canvas, Notebook.Page page, Bitmap background, Images images, boolean export) {
@@ -42,10 +81,16 @@ final class Paper {
             paint.setColor(Color.WHITE);
             canvas.drawBitmap(pdfDetail, null, detailRegion, paint);
         }
+        canvas.getClipBounds(clip);
         for (Notebook.Layer layer : page.layers) {
             if (!layer.visible) continue;
             for (Notebook.Mark mark : page.marks) {
-                if (mark.layer.equals(layer.id)) drawMark(canvas, mark, images);
+                if (!mark.layer.equals(layer.id) || mark.points.isEmpty()) continue;
+                if (Brushes.isInk(mark.tool) || Brushes.isMarker(mark.tool)) {
+                    RectF bounds = geometry(mark).bounds;
+                    if (!bounds.intersects(clip.left, clip.top, clip.right, clip.bottom)) continue;
+                }
+                drawMark(canvas, mark, images);
             }
         }
         canvas.restore();
@@ -86,17 +131,35 @@ final class Paper {
                 for (int y = step; y < height; y += step) canvas.drawLine(0, y, width, y, paint);
             }
             case "Dotted", "Infinite" -> {
-                android.graphics.Rect clip = canvas.getClipBounds();
+                canvas.getClipBounds(clip);
                 int step = 28 * Math.max(1, (Math.max(clip.width(), clip.height()) + 4200) / 4200);
-                int left = Math.floorDiv(clip.left - 14, step) * step;
-                int top = Math.floorDiv(clip.top - 14, step) * step;
+                int left = Math.floorDiv(clip.left - 14, step) * step + 14;
+                int top = Math.floorDiv(clip.top - 14, step) * step + 14;
                 int right = page.infinite() ? clip.right : Math.min(width, clip.right);
                 int bottom = page.infinite() ? clip.bottom : Math.min(height, clip.bottom);
-                for (int x = left + 14; x < right; x += step) {
-                    for (int y = top + 14; y < bottom; y += step) {
-                        canvas.drawCircle(x, y, 1.45f, paint);
+                int columns = Math.max(0, (right - left + step - 1) / step);
+                int rows = Math.max(0, (bottom - top + step - 1) / step);
+                int count = columns * rows * 2;
+                if (count == 0) break;
+                if (left != gridStartX || top != gridStartY || columns != gridColumns
+                        || rows != gridRows || step != gridStep) {
+                    if (gridPoints.length < count) gridPoints = new float[count];
+                    int at = 0;
+                    for (int col = 0; col < columns; col++) {
+                        for (int row = 0; row < rows; row++) {
+                            gridPoints[at++] = left + col * step;
+                            gridPoints[at++] = top + row * step;
+                        }
                     }
+                    gridStartX = left;
+                    gridStartY = top;
+                    gridColumns = columns;
+                    gridRows = rows;
+                    gridStep = step;
                 }
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                paint.setStrokeWidth(2.9f);
+                canvas.drawPoints(gridPoints, 0, count, paint);
             }
             case "Planner" -> {
                 heading(canvas, "Day planner", 44, 79, 38);
@@ -232,48 +295,76 @@ final class Paper {
     }
 
     private void drawFountainNib(Canvas canvas, Notebook.Mark mark) {
-        List<Notebook.Point> points = mark.points;
-        Notebook.Point start = points.get(0);
+        InkGeometry entry = geometry(mark);
+        android.graphics.Path path = fountainPaths.get(entry);
+        if (path == null) {
+            path = fountainPath(mark);
+            fountainPaths.put(entry, path);
+        }
         paint.setStyle(Paint.Style.FILL);
-        boolean moved = false;
-        for (Notebook.Point point : points) {
-            if (point.x() != start.x() || point.y() != start.y()) {
-                moved = true;
-                break;
-            }
+        canvas.drawPath(path, paint);
+    }
+
+    private android.graphics.Path fountainPath(Notebook.Mark mark) {
+        List<Notebook.Point> points = mark.points;
+        int count = points.size();
+        float[] distance = new float[count];
+        for (int i = 1; i < count; i++) {
+            Notebook.Point a = points.get(i - 1), b = points.get(i);
+            distance[i] = distance[i - 1] + (float) Math.hypot(b.x() - a.x(), b.y() - a.y());
         }
-        if (!moved) {
-            float radius = Brushes.pressureWidth(mark, start, start) * .5f;
-            canvas.save();
-            canvas.rotate(-35, start.x(), start.y());
-            canvas.drawOval(start.x() - radius, start.y() - radius * .38f,
-                    start.x() + radius, start.y() + radius * .38f, paint);
-            canvas.restore();
-            return;
+        android.graphics.Path ink = new android.graphics.Path();
+        Notebook.Point first = points.get(0);
+        float total = distance[count - 1];
+        if (total < .03f) {
+            ink.addCircle(first.x(), first.y(), Brushes.pressureWidth(mark, first, first) * .5f,
+                    android.graphics.Path.Direction.CW);
+            return ink;
         }
-        android.graphics.Path outline = new android.graphics.Path();
-        float[] edge = new float[points.size() * 2];
-        for (int i = 0; i < points.size(); i++) {
+
+        float ramp = Math.min(total * .24f, Math.max(mark.thickness * 3.5f, 1f));
+        float lastX = first.x(), lastY = first.y(), lastRadius = 0;
+        for (int i = 0; i < count; i++) {
             Notebook.Point point = points.get(i);
-            Notebook.Point previous = points.get(Math.max(0, i - 1));
-            Notebook.Point next = points.get(Math.min(points.size() - 1, i + 1));
-            float dx = next.x() - previous.x(), dy = next.y() - previous.y();
+            Notebook.Point before = points.get(Math.max(0, i - 1));
+            Notebook.Point after = points.get(Math.min(count - 1, i + 1));
+            float x = (before.x() + 6 * point.x() + after.x()) / 8;
+            float y = (before.y() + 6 * point.y() + after.y()) / 8;
+            if (i == 0 || i == count - 1) {
+                x = point.x();
+                y = point.y();
+            }
+            float dx = after.x() - before.x(), dy = after.y() - before.y();
             float length = (float) Math.hypot(dx, dy);
-            float nx = length > 0 ? -dy / length : 0;
-            float ny = length > 0 ? dx / length : 1;
-            // Project the flattened, angled nib onto the normal of the stroke.
-            float projection = .819f * nx - .574f * ny;
-            float breadth = (float) Math.sqrt(.145f + .855f * projection * projection);
-            float taper = Math.min(1, .48f + .26f * Math.min(i, points.size() - i - 1));
-            float radius = Brushes.pressureWidth(mark, point, point) * .6f * breadth * taper;
-            float x = point.x() + nx * radius, y = point.y() + ny * radius;
-            if (i == 0) outline.moveTo(x, y); else outline.lineTo(x, y);
-            edge[i * 2] = point.x() - nx * radius;
-            edge[i * 2 + 1] = point.y() - ny * radius;
+            float bearing = length > .01f ? Math.abs((.819f * dy + .574f * dx) / length) : .65f;
+            float start = smoothStep(distance[i] / ramp);
+            float end = smoothStep((total - distance[i]) / ramp);
+            float radius = Brushes.pressureWidth(mark, before, after) * .5f
+                    * (.72f + .28f * bearing) * (.38f + .62f * start) * (.20f + .80f * end);
+
+            ink.addCircle(x, y, radius, android.graphics.Path.Direction.CW);
+            dx = x - lastX;
+            dy = y - lastY;
+            length = (float) Math.hypot(dx, dy);
+            if (i > 0 && length > .01f) {
+                float nx = -dy / length, ny = dx / length;
+                // All contours wind in the same direction, so overlaps fill at sharp turns.
+                ink.moveTo(lastX + nx * lastRadius, lastY + ny * lastRadius);
+                ink.lineTo(lastX - nx * lastRadius, lastY - ny * lastRadius);
+                ink.lineTo(x - nx * radius, y - ny * radius);
+                ink.lineTo(x + nx * radius, y + ny * radius);
+                ink.close();
+            }
+            lastX = x;
+            lastY = y;
+            lastRadius = radius;
         }
-        for (int i = points.size() - 1; i >= 0; i--) outline.lineTo(edge[i * 2], edge[i * 2 + 1]);
-        outline.close();
-        canvas.drawPath(outline, paint);
+        return ink;
+    }
+
+    private static float smoothStep(float value) {
+        float clamped = Math.min(1, Math.max(0, value));
+        return clamped * clamped * (3 - 2 * clamped);
     }
 
     private void drawWash(Canvas canvas, Notebook.Mark mark) {

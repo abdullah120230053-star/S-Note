@@ -1326,9 +1326,12 @@ final class NotebookEditor implements InkView.Listener {
     }
 
     @Override public void changed() {
+        if (ink != null) ink.invalidatePaper();
         host.changed(note);
         pageBrowser.refresh(false);
     }
+
+    boolean isInteracting() { return ink != null && ink.isInteracting(); }
 
     void recordingChanged(boolean active) {
         recording.setVisibility(active ? View.VISIBLE : View.GONE);

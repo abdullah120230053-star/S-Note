@@ -51,7 +51,7 @@ public final class MainActivity extends Activity {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService work = Executors.newSingleThreadExecutor();
     private final List<Runnable> afterTask = new ArrayList<>();
-    private final Runnable saveAction = this::save;
+    private final Runnable saveAction = this::saveWhenIdle;
     StudioStyle ui;
     SharedPreferences prefs;
     Library library;
@@ -158,7 +158,13 @@ public final class MainActivity extends Activity {
     void bookmark() {
         dirty = true;
         main.removeCallbacks(saveAction);
-        main.postDelayed(saveAction, 350);
+        main.postDelayed(saveAction, 550);
+    }
+
+    private void saveWhenIdle() {
+        if (editor != null && editor.isInteracting()) {
+            main.postDelayed(saveAction, 550);
+        } else save();
     }
 
     void save() {
