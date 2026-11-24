@@ -83,7 +83,8 @@ final class Paper {
         }
         canvas.getClipBounds(clip);
         for (Notebook.Layer layer : page.layers) {
-            if (!layer.visible) continue;
+            if (!layer.visible || layer.opacity == 0) continue;
+            int composite = layer.opacity == 100 ? -1 : canvas.saveLayerAlpha(null, Math.round(layer.opacity * 2.55f));
             for (Notebook.Mark mark : page.marks) {
                 if (!mark.layer.equals(layer.id) || mark.points.isEmpty()) continue;
                 if (Brushes.isInk(mark.tool) || Brushes.isMarker(mark.tool)) {
@@ -92,6 +93,7 @@ final class Paper {
                 }
                 drawMark(canvas, mark, images);
             }
+            if (composite != -1) canvas.restoreToCount(composite);
         }
         canvas.restore();
     }
@@ -284,7 +286,14 @@ final class Paper {
                 };
                 paint.setAlpha(alpha * mark.opacity / 100);
                 if (mark.tool.equals(Brushes.FINELINER)) paint.setStrokeWidth(mark.thickness * .72f);
+                if (mark.tool.equals(Brushes.BALLPOINT) && mark.lineStyle > 0) {
+                    float unit = Math.max(.5f, mark.thickness);
+                    paint.setPathEffect(new android.graphics.DashPathEffect(mark.lineStyle == 1
+                            ? new float[]{4 * unit, 2.5f * unit}
+                            : new float[]{.12f * unit, 2.5f * unit}, 0));
+                }
                 drawPath(canvas, mark, false);
+                paint.setPathEffect(null);
             }
             case Brushes.CHARCOAL, Brushes.PASTEL -> drawDryPigment(canvas, mark);
             case Brushes.WATERCOLOR -> drawWash(canvas, mark);

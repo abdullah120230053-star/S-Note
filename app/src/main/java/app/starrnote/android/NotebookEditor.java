@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 
 final class NotebookEditor implements InkView.Listener {
+    private static final String[] BALLPOINT_STYLES = {"Solid", "Dashed", "Dotted"};
     private static final int[] COLORS = {0xff172f33, 0xff176d61, 0xff285299, 0xffaa432c,
             0xffe99f18, 0xff8659a0, 0xffc43d67, 0xff605f57, 0xfff5f2e8};
     private static final String[] COLOR_NAMES = {"Graphite", "Juniper", "Blue", "Clay", "Gold", "Iris", "Rose", "Gray", "Ivory"};
@@ -493,6 +494,7 @@ final class NotebookEditor implements InkView.Listener {
         ink.inkColor = color;
         ink.width = width;
         ink.inkOpacity = host.prefs.getInt("brush.opacity." + selectedTool, 100);
+        ink.ballpointStyle = host.prefs.getInt("brush.ballpointStyle", 0);
         boolean adjustablePressure = Brushes.adjustablePressure(selectedTool);
         ink.stabilization = host.prefs.getInt("brush.stabilization." + selectedTool, adjustablePressure ? 20 : 0);
         ink.pressureSensitivity = adjustablePressure ? host.prefs.getInt("brush.pressure." + selectedTool, 20) : 100;
@@ -668,6 +670,8 @@ final class NotebookEditor implements InkView.Listener {
         choices.put("Highlighter and marker styles", () -> brushOptions(highlighter));
         choices.put("Pen box", this::penBox);
         choices.put("Eraser settings", this::eraserSettings);
+        choices.put("Ruler", this::ruler);
+        choices.put("Laser pointer", this::laser);
         for (String tool : new String[]{"Text", "Hand", "Line", "Rectangle", "Ellipse", "Arrow", "Table", "Tape", "Link", "Read"}) {
             choices.put(tool, () -> setTool(tool));
         }
@@ -685,6 +689,16 @@ final class NotebookEditor implements InkView.Listener {
         if (!tool.equals(selectedTool)) setTool(tool);
         String[] family = Brushes.isPen(tool) ? Brushes.PENS : Brushes.isPencil(tool) ? Brushes.PENCILS : Brushes.MARKERS;
         LinearLayout form = host.form();
+        Runnable[] refreshStyle = {() -> {}};
+        TextView lineStyle = ui.button("Line style", false, () ->
+                new AlertDialog.Builder(panelContext()).setTitle("Ballpoint line style")
+                        .setSingleChoiceItems(BALLPOINT_STYLES, ink.ballpointStyle, (dialog, which) -> {
+                            ink.ballpointStyle = which;
+                            persistBrush();
+                            dialog.dismiss();
+                            refreshStyle[0].run();
+                        }).setNegativeButton("Cancel", null).show());
+        form.addView(lineStyle);
         TextView brushName = ui.text(tool, 16, panelTextColor());
         brushName.setGravity(Gravity.CENTER);
         form.addView(brushName, new LinearLayout.LayoutParams(-1, ui.dp(35)));
@@ -729,6 +743,7 @@ final class NotebookEditor implements InkView.Listener {
                 Notebook.Mark mark = new Notebook.Mark(selectedTool, "", color, width);
                 mark.opacity = ink.inkOpacity;
                 mark.pressureSensitivity = ink.pressureSensitivity;
+                mark.lineStyle = ink.ballpointStyle;
                 for (int i = 0; i <= 22; i++) {
                     mark.points.add(new Notebook.Point(getWidth() * (.14f + i * .032f),
                             getHeight() * (.5f + .17f * (float) Math.sin(i * .48f)), .3f + i * .03f));
@@ -749,6 +764,8 @@ final class NotebookEditor implements InkView.Listener {
         Runnable refresh = () -> {
             boolean variablePressure = Brushes.adjustablePressure(selectedTool);
             brushName.setText(selectedTool);
+            lineStyle.setVisibility(Brushes.BALLPOINT.equals(selectedTool) ? View.VISIBLE : View.GONE);
+            lineStyle.setText("Line style · " + BALLPOINT_STYLES[ink.ballpointStyle]);
             pressureSettings.setVisibility(variablePressure ? View.VISIBLE : View.GONE);
             pressure.setProgress(ink.pressureSensitivity);
             pressureLabel.setText("Pressure sensitivity · " + ink.pressureSensitivity + "%");
@@ -762,6 +779,7 @@ final class NotebookEditor implements InkView.Listener {
             stabilizationValue.setText("Stroke stabilization · " + ink.stabilization + "%");
             refreshColor.run();
         };
+        refreshStyle[0] = refresh;
         adjust(pressure, value -> { ink.pressureSensitivity = value; persistBrush(); refresh.run(); });
         adjust(thickness, value -> { width = value / 5f; ink.width = width; persistBrush(); refresh.run(); });
         adjust(opacity, value -> { ink.inkOpacity = value; persistBrush(); refresh.run(); });
@@ -853,6 +871,7 @@ final class NotebookEditor implements InkView.Listener {
         host.prefs.edit().putInt("brush.color." + selectedTool, color)
                 .putFloat("brush.width." + selectedTool, width)
                 .putInt("brush.opacity." + selectedTool, ink.inkOpacity)
+                .putInt("brush.ballpointStyle", ink.ballpointStyle)
                 .putInt("brush.pressure." + selectedTool, ink.pressureSensitivity)
                 .putInt("brush.stabilization." + selectedTool, ink.stabilization).apply();
     }
@@ -864,7 +883,7 @@ final class NotebookEditor implements InkView.Listener {
     private void saveBrush() {
         java.util.Set<String> saved = savedBrushes();
         String preset = selectedTool + "|" + color + "|" + width + "|" + ink.inkOpacity + "|" + ink.stabilization
-                + "|" + ink.pressureSensitivity;
+                + "|" + ink.pressureSensitivity + "|" + (Brushes.BALLPOINT.equals(selectedTool) ? ink.ballpointStyle : 0);
         if (saved.size() >= 40 && !saved.contains(preset)) {
             host.message("Remove a saved brush to make room");
             return;
@@ -880,11 +899,13 @@ final class NotebookEditor implements InkView.Listener {
         List<String> names = new ArrayList<>();
         for (String value : presets) {
             String[] parts = value.split("\\|");
-            if (parts.length != 5 && parts.length != 6) continue;
-            int pressure = parts.length == 6 ? Integer.parseInt(parts[5]) : 100;
+            if (parts.length < 5 || parts.length > 7) continue;
+            int pressure = parts.length >= 6 ? Integer.parseInt(parts[5]) : 100;
+            int style = parts.length == 7 ? Integer.parseInt(parts[6]) : 0;
             String label = parts[0] + String.format(java.util.Locale.ROOT, " · #%06X", Integer.parseInt(parts[1]) & 0xffffff)
                     + " · " + parts[2] + " px · " + parts[3] + "% ink · " + parts[4] + "% smoothing"
-                    + (Brushes.adjustablePressure(parts[0]) ? " · " + pressure + "% pressure" : "");
+                    + (Brushes.adjustablePressure(parts[0]) ? " · " + pressure + "% pressure" : "")
+                    + (Brushes.BALLPOINT.equals(parts[0]) ? " · " + BALLPOINT_STYLES[style] : "");
             names.add(label);
             actions.put(label, () -> {
                 setTool(parts[0]);
@@ -893,6 +914,7 @@ final class NotebookEditor implements InkView.Listener {
                 ink.inkOpacity = Integer.parseInt(parts[3]);
                 ink.stabilization = Integer.parseInt(parts[4]);
                 ink.pressureSensitivity = pressure;
+                if (Brushes.BALLPOINT.equals(parts[0])) ink.ballpointStyle = style;
                 persistBrush();
             });
         }
@@ -1246,6 +1268,20 @@ final class NotebookEditor implements InkView.Listener {
             layer.name = name;
             changed();
         }));
+        actions.put("Layer opacity · " + layer.opacity + "%", () -> {
+            SeekBar opacity = new SeekBar(panelContext());
+            opacity.setMax(100);
+            opacity.setProgress(layer.opacity);
+            opacity.setContentDescription("Layer opacity");
+            new AlertDialog.Builder(panelContext()).setTitle("Layer opacity").setView(opacity)
+                    .setPositiveButton("Apply", (dialog, which) -> {
+                        layer.opacity = opacity.getProgress();
+                        changed();
+                    }).setNegativeButton("Cancel", null).show();
+        });
+        actions.put("Delete layer", () -> new AlertDialog.Builder(panelContext()).setTitle("Move layer to Deleted layers?")
+                .setPositiveButton("Delete", (dialog, which) -> deleteLayer(page, layer))
+                .setNegativeButton("Cancel", null).show());
         int index = page.layers.indexOf(layer);
         if (index < page.layers.size() - 1) actions.put("Raise layer", () -> moveLayer(layer, index + 1));
         if (index > 0) actions.put("Lower layer", () -> moveLayer(layer, index - 1));
@@ -1266,6 +1302,21 @@ final class NotebookEditor implements InkView.Listener {
     private void layers() {
         Notebook.Page page = note.current();
         Map<String, Runnable> actions = new LinkedHashMap<>();
+        if (!page.deletedLayers.isEmpty()) {
+            actions.put("Deleted layers", () -> {
+                List<Notebook.DeletedLayer> deleted = new ArrayList<>(page.deletedLayers);
+                String[] names = deleted.stream().map(item -> "Restore " + item.layer().name).toArray(String[]::new);
+                new AlertDialog.Builder(panelContext()).setTitle("Deleted layers").setItems(names, (dialog, which) -> {
+                    Notebook.DeletedLayer item = deleted.get(which);
+                    if (!page.deletedLayers.remove(item)) return;
+                    page.layers.add(Math.min(page.layers.size(), Math.max(0, item.position())), item.layer());
+                    page.marks.addAll(item.marks());
+                    ink.keepLayerInHistory(item.marks());
+                    ink.selectLayer(item.layer().id);
+                    changed();
+                }).setNegativeButton("Close", null).show();
+            });
+        }
         actions.put("+ Add layer", () -> host.prompt("Add layer", "Layer name", "Layer " + (page.layers.size() + 1), name -> {
             Notebook.Layer layer = new Notebook.Layer(name);
             page.layers.add(layer);
@@ -1281,10 +1332,82 @@ final class NotebookEditor implements InkView.Listener {
         host.options("Layers", actions);
     }
 
+    private void deleteLayer(Notebook.Page page, Notebook.Layer layer) {
+        int position = page.layers.indexOf(layer);
+        if (position < 0) return;
+        List<Notebook.Mark> removed = new ArrayList<>();
+        for (Notebook.Mark mark : page.marks) if (layer.id.equals(mark.layer)) removed.add(mark);
+        page.deletedLayers.add(new Notebook.DeletedLayer(layer, position, removed));
+        page.marks.removeAll(removed);
+        page.layers.remove(layer);
+        if (page.layers.isEmpty()) page.layers.add(new Notebook.Layer("Ink"));
+        ink.forgetLayerHistory(layer.id);
+        ink.clearSelection();
+        if (ink.activeLayer().equals(layer.id)) ink.selectLayer(page.layers.get(0).id);
+        changed();
+    }
+
+    private void ruler() {
+        EditText angle = new EditText(panelContext());
+        angle.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        angle.setText(Float.toString(Float.isNaN(ink.rulerAngle) ? 0 : ink.rulerAngle));
+        angle.setHint("Angle in degrees");
+        new AlertDialog.Builder(panelContext()).setTitle("Ruler angle").setView(angle)
+                .setPositiveButton("Show ruler", (dialog, which) -> {
+                    try {
+                        float value = Float.parseFloat(angle.getText().toString());
+                        if (!Float.isFinite(value)) throw new NumberFormatException();
+                        ink.rulerAngle = value % 360;
+                        if (!Brushes.isInk(selectedTool)) setTool(pen);
+                        ink.invalidate();
+                    } catch (NumberFormatException invalid) { host.message("Enter a valid angle in degrees"); }
+                }).setNeutralButton("Hide ruler", (dialog, which) -> {
+                    ink.rulerAngle = Float.NaN;
+                    ink.invalidate();
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void laser() {
+        LinearLayout form = host.form();
+        int duration = host.prefs.getInt("laser.duration", 1500);
+        TextView value = ui.text("", 14, panelTextColor());
+        SeekBar slider = new SeekBar(panelContext());
+        slider.setMin(1);
+        slider.setMax(20);
+        slider.setProgress(duration / 250);
+        slider.setContentDescription("Laser trail duration");
+        java.util.function.IntConsumer preview = tick -> value.setText(String.format(java.util.Locale.ROOT,
+                "Trail duration · %.2f s", tick / 4f));
+        preview.accept(slider.getProgress());
+        adjust(slider, preview);
+        form.addView(value);
+        form.addView(slider);
+        new AlertDialog.Builder(panelContext()).setTitle("Laser pointer").setView(form)
+                .setPositiveButton("Use laser", (dialog, which) -> {
+                    ink.laserDuration = slider.getProgress() * 250;
+                    host.prefs.edit().putInt("laser.duration", ink.laserDuration).apply();
+                    setTool("Laser pointer");
+                }).setNegativeButton("Cancel", null).show();
+    }
+
     private void materials() {
-        String[] entries = {"✦  Focus star", "✓  Checkmark", "⚑  Flag", "☀  Sun", "⚡  Bolt",
-                "♡  Heart", "✿  Flower", "↗  Arrow", "◎  Target", "▶  Play", "➜  Next", "◷  Clock"};
-        new AlertDialog.Builder(host).setTitle("Materials library").setItems(entries, (d, i) -> {
+        Map<String, Runnable> packs = new LinkedHashMap<>();
+        packs.put("Study stickers", () -> stickers("Study stickers",
+                new String[]{"✦  Focus star", "✓  Checkmark", "⚑  Flag", "◎  Target", "?  Review question", "★  Priority"}));
+        packs.put("Planning stickers", () -> stickers("Planning stickers",
+                new String[]{"◷  Clock", "☀  Morning", "☾  Evening", "➜  Next", "▶  Play", "♡  Wellness", "✿  Reflection"}));
+        packs.put("Diagram stickers", () -> stickers("Diagram stickers",
+                new String[]{"↗  Upward trend", "↔  Compare", "⇄  Exchange", "△  Triangle", "○  Circle", "⚡  Energy"}));
+        for (String template : new String[]{PlannerTemplates.LECTURE_REVIEW, PlannerTemplates.LAB_LOG,
+                PlannerTemplates.HABIT_TRACKER}) {
+            packs.put("Add " + template, () -> choosePaperTheme(template, note.current().paperTheme,
+                    theme -> appendPage(template, "", theme)));
+        }
+        host.options("Materials library", packs);
+    }
+
+    private void stickers(String title, String[] entries) {
+        new AlertDialog.Builder(host).setTitle(title).setItems(entries, (d, i) -> {
             Notebook.Page page = note.current();
             ink.add("Sticker", entries[i].substring(0, 1), "",
                     Math.min(300, page.width * .37f), Math.min(180, page.height * .24f), 68, 0);

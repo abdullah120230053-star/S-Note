@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_label">StarrNote notebooks</string>
+    <string name="widget_description">Create a notebook, open a recent or pinned note, and see library totals.</string>
+    <string name="widget_new_note">+ New note</string>
+</resources>

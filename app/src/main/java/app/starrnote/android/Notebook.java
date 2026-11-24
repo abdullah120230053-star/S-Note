@@ -13,7 +13,8 @@ final class Notebook {
     static final String[] PAPERS = {"Blank", "Ruled", "Grid", "Dotted", "Cornell", "Planner", "Music", "Infinite",
             PlannerTemplates.DAILY_AGENDA, PlannerTemplates.DAILY_FOCUS, PlannerTemplates.WEEKLY_BOARDS,
             PlannerTemplates.WEEKLY_TIMETABLE, PlannerTemplates.TASK_CHECKLIST, PlannerTemplates.TASK_BOARD,
-            "Rule line 1", "Rule line 2", "Grid small", "Grid large", NOTEBOOK_PAPER};
+            "Rule line 1", "Rule line 2", "Grid small", "Grid large", NOTEBOOK_PAPER,
+            PlannerTemplates.LECTURE_REVIEW, PlannerTemplates.LAB_LOG, PlannerTemplates.HABIT_TRACKER};
     static final int[] COVERS = {0xff164b46, 0xff495681, 0xff9e5245, 0xff786332, 0xff4c6745};
 
     String id = id();
@@ -100,6 +101,7 @@ final class Notebook {
         int height = 1120;
         final List<Layer> layers = new ArrayList<>();
         final List<Mark> marks = new ArrayList<>();
+        final List<DeletedLayer> deletedLayers = new ArrayList<>();
 
         Page() {
             layers.add(new Layer("Ink"));
@@ -118,10 +120,12 @@ final class Notebook {
             for (Layer layer : layers) layerArray.put(layer.json());
             JSONArray markArray = new JSONArray();
             for (Mark mark : marks) markArray.put(mark.json());
+            JSONArray deleted = new JSONArray();
+            for (DeletedLayer layer : deletedLayers) deleted.put(layer.json());
             return new JSONObject().put("id", id).put("paper", paper).put("paperTheme", paperTheme).put("paperColor", paperColor)
                     .put("title", title).put("indexedText", indexedText)
                     .put("background", background).put("pdfIndex", pdfIndex).put("width", width)
-                    .put("height", height).put("layers", layerArray).put("marks", markArray);
+                    .put("height", height).put("layers", layerArray).put("marks", markArray).put("deletedLayers", deleted);
         }
 
         static Page read(JSONObject data) throws JSONException {
@@ -143,6 +147,10 @@ final class Notebook {
             if (value.layers.isEmpty()) value.layers.add(new Layer("Ink"));
             JSONArray marks = data.getJSONArray("marks");
             for (int i = 0; i < marks.length(); i++) value.marks.add(Mark.read(marks.getJSONObject(i)));
+            JSONArray deleted = data.optJSONArray("deletedLayers");
+            if (deleted != null) {
+                for (int i = 0; i < deleted.length(); i++) value.deletedLayers.add(DeletedLayer.read(deleted.getJSONObject(i)));
+            }
             return value;
         }
 
@@ -157,11 +165,13 @@ final class Notebook {
         String name;
         boolean visible = true;
         boolean locked;
+        int opacity = 100;
 
         Layer(String name) { this.name = name; }
 
         JSONObject json() throws JSONException {
-            return new JSONObject().put("id", id).put("name", name).put("visible", visible).put("locked", locked);
+            return new JSONObject().put("id", id).put("name", name).put("visible", visible).put("locked", locked)
+                    .put("opacity", opacity);
         }
 
         static Layer read(JSONObject data) throws JSONException {
@@ -169,7 +179,23 @@ final class Notebook {
             value.id = data.getString("id");
             value.visible = data.optBoolean("visible", true);
             value.locked = data.optBoolean("locked");
+            value.opacity = Math.max(0, Math.min(100, data.optInt("opacity", 100)));
             return value;
+        }
+    }
+
+    record DeletedLayer(Layer layer, int position, List<Mark> marks) {
+        JSONObject json() throws JSONException {
+            JSONArray items = new JSONArray();
+            for (Mark mark : marks) items.put(mark.json());
+            return new JSONObject().put("layer", layer.json()).put("position", position).put("marks", items);
+        }
+
+        static DeletedLayer read(JSONObject data) throws JSONException {
+            List<Mark> marks = new ArrayList<>();
+            JSONArray items = data.getJSONArray("marks");
+            for (int i = 0; i < items.length(); i++) marks.add(Mark.read(items.getJSONObject(i)));
+            return new DeletedLayer(Layer.read(data.getJSONObject("layer")), data.optInt("position"), marks);
         }
     }
 
@@ -185,6 +211,7 @@ final class Notebook {
         String font = "sans-serif";
         int opacity = 100;
         int pressureSensitivity = 100;
+        int lineStyle;
         boolean revealed;
         final List<Point> points = new ArrayList<>();
 
@@ -202,6 +229,7 @@ final class Notebook {
             result.font = font;
             result.opacity = opacity;
             result.pressureSensitivity = pressureSensitivity;
+            result.lineStyle = lineStyle;
             result.revealed = revealed;
             result.points.addAll(points);
             return result;
@@ -220,7 +248,7 @@ final class Notebook {
             return new JSONObject().put("tool", tool).put("layer", layer).put("color", color)
                     .put("thickness", thickness).put("value", value).put("link", link)
                     .put("font", font).put("opacity", opacity).put("pressureSensitivity", pressureSensitivity)
-                    .put("revealed", revealed).put("path", path);
+                    .put("revealed", revealed).put("path", path).put("lineStyle", lineStyle);
         }
 
         static Mark read(JSONObject data) throws JSONException {
@@ -232,6 +260,7 @@ final class Notebook {
             mark.opacity = Math.max(0, Math.min(100, data.optInt("opacity", 100)));
             mark.pressureSensitivity = Math.max(0, Math.min(100, data.optInt("pressureSensitivity", 100)));
             mark.revealed = data.optBoolean("revealed");
+            mark.lineStyle = Math.max(0, Math.min(2, data.optInt("lineStyle")));
             JSONArray path = data.getJSONArray("path");
             for (int i = 0; i + 2 < path.length(); i += 3) {
                 mark.points.add(new Point((float) path.getDouble(i), (float) path.getDouble(i + 1),

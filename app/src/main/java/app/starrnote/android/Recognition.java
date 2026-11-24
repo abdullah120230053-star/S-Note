@@ -28,6 +28,10 @@ final class Recognition {
             "ja", "ko", "pt", "ru", "es"};
 
     static Task<String> handwriting(List<Notebook.Mark> marks, int language) {
+        return handwriting(marks, language, com.google.android.gms.tasks.TaskExecutors.MAIN_THREAD);
+    }
+
+    static Task<String> handwriting(List<Notebook.Mark> marks, int language, java.util.concurrent.Executor worker) {
         try {
             DigitalInkRecognitionModelIdentifier id = DigitalInkRecognitionModelIdentifier.fromLanguageTag(TAGS[language]);
             if (id == null) return Tasks.forException(new IllegalStateException("Language model unavailable"));
@@ -35,7 +39,7 @@ final class Recognition {
             List<Line> lines = lines(marks);
             if (lines.isEmpty()) return Tasks.forResult("");
             return RemoteModelManager.getInstance().download(model, new DownloadConditions.Builder().build())
-                    .onSuccessTask(done -> {
+                    .onSuccessTask(worker, done -> {
                         DigitalInkRecognizer client = DigitalInkRecognition.getClient(
                                 DigitalInkRecognizerOptions.builder(model).build());
                         List<Task<String>> results = new ArrayList<>();

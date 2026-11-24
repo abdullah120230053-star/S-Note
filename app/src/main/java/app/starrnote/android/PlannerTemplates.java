@@ -8,6 +8,7 @@ final class PlannerTemplates {
     static final String DAILY_AGENDA = "Daily agenda", DAILY_FOCUS = "Daily focus";
     static final String WEEKLY_BOARDS = "Weekly boards", WEEKLY_TIMETABLE = "Weekly timetable";
     static final String TASK_CHECKLIST = "To-do checklist", TASK_BOARD = "To-do board";
+    static final String LECTURE_REVIEW = "Lecture review", LAB_LOG = "Lab log", HABIT_TRACKER = "Habit tracker";
     static final String[] THEMES = {"Juniper", "Coast", "Terracotta", "Graphite"};
     private static final String[] DAYS = {"Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"};
     private static final int[][] COLORS = {
@@ -21,7 +22,8 @@ final class PlannerTemplates {
 
     static boolean isPlanner(String paper) {
         return switch (paper) {
-            case DAILY_AGENDA, DAILY_FOCUS, WEEKLY_BOARDS, WEEKLY_TIMETABLE, TASK_CHECKLIST, TASK_BOARD -> true;
+            case DAILY_AGENDA, DAILY_FOCUS, WEEKLY_BOARDS, WEEKLY_TIMETABLE, TASK_CHECKLIST, TASK_BOARD,
+                    LECTURE_REVIEW, LAB_LOG, HABIT_TRACKER -> true;
             default -> false;
         };
     }
@@ -44,9 +46,41 @@ final class PlannerTemplates {
             case WEEKLY_TIMETABLE -> weeklyTimetable(canvas);
             case TASK_CHECKLIST -> checklist(canvas);
             case TASK_BOARD -> taskBoard(canvas);
+            case LECTURE_REVIEW -> sections(canvas, "Key concepts", "Questions for review", "Summary");
+            case LAB_LOG -> sections(canvas, "Objective and materials", "Procedure and observations", "Results and next steps");
+            case HABIT_TRACKER -> habits(canvas);
         }
         canvas.restore();
         return true;
+    }
+
+    private void sections(Canvas canvas, String first, String second, String third) {
+        String[] labels = {first, second, third};
+        for (int section = 0; section < labels.length; section++) {
+            int top = 158 + section * 302;
+            panel(canvas, labels[section], 44, top, 752, 282, section % 2 == 0 ? wash : shade);
+            rows(canvas, 62, top + 55, 775, 6, 35, false);
+        }
+    }
+
+    private void habits(Canvas canvas) {
+        panel(canvas, "Habit", 44, 158, 752, 665, wash);
+        for (int day = 0; day < DAYS.length; day++) {
+            label(canvas, DAYS[day].substring(0, 3), 334 + day * 63, 205, 14, accent, false);
+        }
+        for (int row = 0; row < 9; row++) {
+            int y = 232 + row * 63;
+            line(canvas, 62, y + 47, 775, y + 47, rule);
+            for (int day = 0; day < DAYS.length; day++) {
+                int x = 338 + day * 63;
+                paint.setColor(rule);
+                paint.setStyle(Paint.Style.STROKE);
+                canvas.drawRoundRect(x, y, x + 22, y + 22, 3, 3, paint);
+                paint.setStyle(Paint.Style.FILL);
+            }
+        }
+        panel(canvas, "Reflections", 44, 846, 752, 210, shade);
+        rows(canvas, 62, 900, 775, 4, 34, false);
     }
 
     private void dailyAgenda(Canvas c) {

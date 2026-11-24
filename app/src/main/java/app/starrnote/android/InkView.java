@@ -68,6 +68,13 @@ final class InkView extends View {
     float width = 5;
     int inkOpacity = 100, stabilization;
     int pressureSensitivity = 100;
+    int ballpointStyle;
+    float rulerAngle = Float.NaN;
+    private float rulerX, rulerY;
+    private boolean movingRuler;
+    int laserDuration = 1500;
+    private Notebook.Mark laserTrail;
+    private long laserExpires;
 
     InkView(Context context, Notebook.Page page, Paper.Images images, Listener listener) {
         super(context);
@@ -256,7 +263,22 @@ final class InkView extends View {
         }
         if (!reusePaper) paper.draw(canvas, page, background, images, charcoalWorkspace, detailBitmap, detailRegion);
         if (!page.infinite()) canvas.clipRect(0, 0, page.width, page.height);
-        if (draft != null) paper.drawMark(canvas, draft, images);
+        if (draft != null) {
+            int opacity = tool.equals("Laser pointer") ? 100 : page.layer(draft.layer).opacity;
+            if (opacity > 0) {
+                int composite = opacity == 100 ? -1 : canvas.saveLayerAlpha(null, Math.round(opacity * 2.55f));
+                paper.drawMark(canvas, draft, images);
+                if (composite != -1) canvas.restoreToCount(composite);
+            }
+        }
+        if (laserTrail != null) {
+            long remaining = laserExpires - android.os.SystemClock.uptimeMillis();
+            if (remaining > 0) {
+                laserTrail.opacity = (int) Math.min(100, remaining / 4);
+                paper.drawMark(canvas, laserTrail, images);
+                postInvalidateOnAnimation();
+            } else laserTrail = null;
+        }
         if (erasing && eraseMode == 2) {
             overlay.setStyle(Paint.Style.STROKE);
             overlay.setStrokeWidth(2 / scale());
@@ -286,6 +308,48 @@ final class InkView extends View {
         }
         overlay.setPathEffect(null);
         canvas.restore();
+        drawRuler(canvas);
+    }
+
+    private void drawRuler(Canvas canvas) {
+        if (Float.isNaN(rulerAngle)) return;
+        float density = getResources().getDisplayMetrics().density;
+        float half = Math.min(getWidth() * .37f, 220 * density);
+        canvas.save();
+        canvas.translate(getWidth() / 2f + rulerX, getHeight() / 2f + rulerY);
+        canvas.rotate(rulerAngle);
+        overlay.setStyle(Paint.Style.FILL);
+        overlay.setColor(0x6666add0);
+        canvas.drawRoundRect(-half, 0, half, 34 * density, 5 * density, 5 * density, overlay);
+        overlay.setColor(0xff376c84);
+        overlay.setStrokeWidth(density);
+        for (int i = -20; i <= 20; i++) {
+            float x = i * half / 20;
+            canvas.drawLine(x, 0, x, (i % 5 == 0 ? 14 : 7) * density, overlay);
+        }
+        canvas.restore();
+    }
+
+    private Notebook.Point snapped(float x, float y, float pressure) {
+        if (Float.isNaN(rulerAngle)) return new Notebook.Point(x, y, pressure);
+        double angle = Math.toRadians(rulerAngle);
+        float dx = (float) Math.cos(angle), dy = (float) Math.sin(angle);
+        float centerX = localX(getWidth() / 2f + rulerX), centerY = localY(getHeight() / 2f + rulerY);
+        float along = (x - centerX) * dx + (y - centerY) * dy;
+        return new Notebook.Point(centerX + along * dx, centerY + along * dy, pressure);
+    }
+
+    private boolean rulerStroke;
+
+    private boolean rulerHandle(float screenX, float screenY) {
+        if (Float.isNaN(rulerAngle)) return false;
+        float x = screenX - getWidth() / 2f - rulerX, y = screenY - getHeight() / 2f - rulerY;
+        double angle = Math.toRadians(rulerAngle);
+        double along = x * Math.cos(angle) + y * Math.sin(angle);
+        double inset = -x * Math.sin(angle) + y * Math.cos(angle);
+        float density = getResources().getDisplayMetrics().density;
+        return Math.abs(along) <= Math.min(getWidth() * .37f, 220 * density)
+                && inset >= 19 * density && inset <= 34 * density;
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
@@ -300,9 +364,10 @@ final class InkView extends View {
             previousX = event.getX();
             previousY = event.getY();
             moved = false;
+            movingRuler = rulerHandle(previousX, previousY);
             previousSpan = 0;
             dragX = dragY = 0;
-            if (!panning) begin(event);
+            if (!panning && !movingRuler) begin(event);
             return true;
         }
         if (action == MotionEvent.ACTION_POINTER_DOWN) {
@@ -321,7 +386,14 @@ final class InkView extends View {
         if (action == MotionEvent.ACTION_MOVE) {
             int active = event.findPointerIndex(pointerId);
             if (active < 0) return true;
-            if (panning) pan(event, active);
+            if (movingRuler) {
+                rulerX = Math.max(-getWidth() * .43f, Math.min(getWidth() * .43f,
+                        rulerX + event.getX(active) - previousX));
+                rulerY = Math.max(-getHeight() * .43f, Math.min(getHeight() * .43f,
+                        rulerY + event.getY(active) - previousY));
+                previousX = event.getX(active);
+                previousY = event.getY(active);
+            } else if (panning) pan(event, active);
             else {
                 for (int i = 0; i < event.getHistorySize(); i++) {
                     update(localX(event.getHistoricalX(active, i)), localY(event.getHistoricalY(active, i)),
@@ -334,7 +406,7 @@ final class InkView extends View {
         }
         if ((action == MotionEvent.ACTION_POINTER_UP && event.getPointerId(index) == pointerId)
                 || action == MotionEvent.ACTION_UP) {
-            if (!panning) end(localX(event.getX(index)), localY(event.getY(index)), event.getPressure(index));
+            if (!panning && !movingRuler) end(localX(event.getX(index)), localY(event.getY(index)), event.getPressure(index));
             resetGesture();
             if (action == MotionEvent.ACTION_POINTER_UP) {
                 int next = index == 0 ? 1 : 0;
@@ -387,6 +459,13 @@ final class InkView extends View {
         }
         if (tool.equals("Read")) return;
         String actual = event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER ? "Eraser" : tool;
+        if (actual.equals("Laser pointer")) {
+            laserTrail = null;
+            draft = new Notebook.Mark(Brushes.BALLPOINT, "", 0xffff334f, 4 / scale());
+            draft.points.add(new Notebook.Point(x, y, 1));
+            invalidate();
+            return;
+        }
         if (actual.equals("Eraser")) {
             erasing = true;
             eraseStartX = eraseLastX = x;
@@ -402,7 +481,16 @@ final class InkView extends View {
         draft = new Notebook.Mark(actual, active.id, inkColor, thickness);
         draft.opacity = inkOpacity;
         draft.pressureSensitivity = pressureSensitivity;
-        draft.points.add(new Notebook.Point(x, y, event.getPressure()));
+        if (actual.equals(Brushes.BALLPOINT)) draft.lineStyle = ballpointStyle;
+        if (Brushes.isInk(actual) && !Float.isNaN(rulerAngle)) {
+            Notebook.Point nearest = snapped(x, y, event.getPressure());
+            rulerStroke = Math.hypot(x - nearest.x(), y - nearest.y()) * scale()
+                    <= 18 * getResources().getDisplayMetrics().density
+                    && Math.hypot(nearest.x() - localX(getWidth() / 2f + rulerX),
+                            nearest.y() - localY(getHeight() / 2f + rulerY)) * scale()
+                    <= Math.min(getWidth() * .37f, 220 * getResources().getDisplayMetrics().density);
+        }
+        draft.points.add(rulerStroke ? snapped(x, y, event.getPressure()) : new Notebook.Point(x, y, event.getPressure()));
     }
 
     private void update(float x, float y, float pressure) {
@@ -427,7 +515,7 @@ final class InkView extends View {
                 x += (last.x() - x) * smoothing;
                 y += (last.y() - y) * smoothing;
             }
-            draft.points.add(new Notebook.Point(x, y, pressure));
+            draft.points.add(rulerStroke ? snapped(x, y, pressure) : new Notebook.Point(x, y, pressure));
         } else if (erasing) {
             if (eraseMode == 2) {
                 eraseRadius = Math.max(radius(pressure), (float) Math.hypot(x - eraseStartX, y - eraseStartY));
@@ -453,6 +541,11 @@ final class InkView extends View {
 
     private void end(float x, float y, float pressure) {
         update(x, y, pressure);
+        if (tool.equals("Laser pointer") && draft != null) {
+            laserTrail = draft;
+            laserExpires = android.os.SystemClock.uptimeMillis() + laserDuration;
+            return;
+        }
         if (erasing && eraseMode == 2) erase(eraseStartX, eraseStartY, eraseRadius);
         if (dragSelection && moved) {
             snapshot();
@@ -471,7 +564,9 @@ final class InkView extends View {
         } else if (!lasso.isEmpty()) {
             select(x, y);
         } else if (draft != null) {
-            if (Brushes.isInk(draft.tool) && stabilization > 0) draft.points.add(new Notebook.Point(x, y, pressure));
+            if (Brushes.isInk(draft.tool) && stabilization > 0) {
+                draft.points.add(rulerStroke ? snapped(x, y, pressure) : new Notebook.Point(x, y, pressure));
+            }
             if (!scribble || !Brushes.isPen(draft.tool) || !eraseScribble(draft)) {
                 snapshot();
                 page.marks.add(draft);
@@ -515,6 +610,8 @@ final class InkView extends View {
 
     private void resetGesture() {
         draft = null;
+        rulerStroke = false;
+        movingRuler = false;
         lasso.clear();
         erased.clear();
         pointerId = -1;
@@ -761,6 +858,16 @@ final class InkView extends View {
         undo.push(new ArrayList<>(page.marks));
         if (undo.size() > 30) undo.removeLast();
         redo.clear();
+    }
+
+    void forgetLayerHistory(String layerId) {
+        for (List<Notebook.Mark> state : undo) state.removeIf(mark -> layerId.equals(mark.layer));
+        for (List<Notebook.Mark> state : redo) state.removeIf(mark -> layerId.equals(mark.layer));
+    }
+
+    void keepLayerInHistory(List<Notebook.Mark> marks) {
+        for (List<Notebook.Mark> state : undo) state.addAll(marks);
+        for (List<Notebook.Mark> state : redo) state.addAll(marks);
     }
 
     private List<Notebook.Mark> copy(List<Notebook.Mark> marks) {

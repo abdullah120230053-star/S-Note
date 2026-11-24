@@ -65,6 +65,9 @@ public final class MainActivity extends Activity {
     private Runnable afterUnlock;
     private boolean dirty, favorites, loading;
     private String filter = "", query = "";
+    private final HandwritingIndex handwritingIndex = new HandwritingIndex();
+    private TextView smartSearch;
+    private final Runnable indexSearch = this::indexHandwriting;
     private enum Collection { ALL, NOTEBOOKS, PDFS }
     private Collection collection = Collection.ALL;
     private enum Shelf { ALL, UNCATEGORIZED, UNTAGGED, TRASH }
@@ -93,6 +96,8 @@ public final class MainActivity extends Activity {
         for (String id : prefs.getString("editor.tabs", "").split(",")) {
             if (findNotebook(id) != null && !tabIds.contains(id)) tabIds.add(id);
         }
+        NotebookWidget.publish(this, library.notebooks, null);
+        if (state == null && openWidget(getIntent())) return;
         for (Notebook note : library.notebooks) {
             if (note.id.equals(previous)) {
                 showEditor(note);
@@ -100,6 +105,24 @@ public final class MainActivity extends Activity {
             }
         }
         showLibrary();
+    }
+
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (library != null) openWidget(intent);
+    }
+
+    private boolean openWidget(Intent intent) {
+        if (NotebookWidget.NEW.equals(intent.getAction())) {
+            showLibrary();
+            newNotebook();
+            return true;
+        }
+        if (!NotebookWidget.OPEN.equals(intent.getAction())) return false;
+        Notebook note = findNotebook(intent.getStringExtra(NotebookWidget.NOTE));
+        if (note == null || note.trashed) showLibrary();
+        else showEditor(note);
+        return true;
     }
 
     private void applyTheme() {
@@ -132,6 +155,8 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        main.removeCallbacks(indexSearch);
+        handwritingIndex.clear();
         work.shutdown();
         if (timer != null) timer.cancel();
         if (audio != null) audio.close();
@@ -172,6 +197,7 @@ public final class MainActivity extends Activity {
         if (!dirty || library == null || loading) return;
         try {
             library.save();
+            NotebookWidget.publish(this, library.notebooks, null);
             dirty = false;
         } catch (Exception failure) {
             message("Changes are still open. StarrNote could not save them: " + detail(failure));
@@ -255,10 +281,13 @@ public final class MainActivity extends Activity {
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
                 query = text.toString();
                 drawResults();
+                scheduleHandwritingSearch();
             }
             @Override public void afterTextChanged(Editable value) {}
         });
         ui.append(compact ? shelves : body, search, compact ? 0 : 15);
+        smartSearch = ui.button("Smart Search", false, this::smartSearchOptions);
+        ui.append(compact ? shelves : body, smartSearch, 6);
         if (tablet) drawShelves(shelves, true);
 
         if (compact) {
@@ -282,6 +311,43 @@ public final class MainActivity extends Activity {
         setContentView(root);
         root.setFocusableInTouchMode(true);
         root.requestFocus();
+        drawResults();
+        scheduleHandwritingSearch();
+    }
+
+    private void smartSearchOptions() {
+        Map<String, Runnable> options = new LinkedHashMap<>();
+        boolean enabled = prefs.getBoolean("search.smart", false);
+        options.put(enabled ? "Turn off handwriting search" : "Search handwritten notes", () -> {
+            prefs.edit().putBoolean("search.smart", !enabled).apply();
+            if (enabled) handwritingIndex.clear();
+            updateSmartSearch();
+            scheduleHandwritingSearch();
+        });
+        options.put("Handwriting search language", () -> new AlertDialog.Builder(this)
+                .setTitle("Handwriting search language")
+                .setSingleChoiceItems(Recognition.LANGUAGES, prefs.getInt("search.language", 0), (dialog, which) -> {
+                    prefs.edit().putInt("search.language", which).apply();
+                    dialog.dismiss();
+                    updateSmartSearch();
+                    scheduleHandwritingSearch();
+                }).setNegativeButton("Cancel", null).show());
+        options("Smart Search", options);
+    }
+
+    private void scheduleHandwritingSearch() {
+        main.removeCallbacks(indexSearch);
+        if (prefs.getBoolean("search.smart", false) && !query.trim().isEmpty()) main.postDelayed(indexSearch, 350);
+    }
+
+    private void indexHandwriting() {
+        if (open == null && !loading && !isDestroyed()) handwritingIndex.scan(library.notebooks,
+                prefs.getInt("search.language", 0), work, this::updateSmartSearch);
+    }
+
+    private void updateSmartSearch() {
+        if (open != null || isDestroyed() || smartSearch == null) return;
+        smartSearch.setText(prefs.getBoolean("search.smart", false) ? handwritingIndex.status() : "Smart Search");
         drawResults();
     }
 
@@ -489,6 +555,8 @@ public final class MainActivity extends Activity {
 
     private boolean matchesPage(Notebook.Page page, String term) {
         if (contains(page.title, term) || contains(page.indexedText, term)) return true;
+        if (prefs.getBoolean("search.smart", false)
+                && handwritingIndex.matches(page, term, prefs.getInt("search.language", 0))) return true;
         for (Notebook.Mark mark : page.marks) {
             if ((mark.tool.equals("Text") || mark.tool.equals("Link")) && contains(mark.value, term)) return true;
         }
@@ -648,6 +716,8 @@ public final class MainActivity extends Activity {
     }
 
     private void displayEditor(Notebook note) {
+        handwritingIndex.clear();
+        NotebookWidget.publish(this, library.notebooks, note);
         rememberTab();
         save();
         if (open != null && open != note) audio.stopRecording();

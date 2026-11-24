@@ -221,6 +221,9 @@ final class Library {
             for (Notebook.Page page : note.pages) {
                 if (!page.background.isEmpty()) names.add(page.background);
                 for (Notebook.Mark mark : page.marks) if ("Image".equals(mark.tool)) names.add(mark.value);
+                for (Notebook.DeletedLayer deleted : page.deletedLayers) {
+                    for (Notebook.Mark mark : deleted.marks()) if ("Image".equals(mark.tool)) names.add(mark.value);
+                }
             }
             for (Notebook.Clip clip : note.clips) names.add(clip.file);
         }

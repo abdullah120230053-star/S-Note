@@ -27,14 +27,15 @@ final class NotebookGallery {
             new Size("Portrait, US Letter", 850, 1100), new Size("Landscape, US Letter", 1100, 850),
             new Size("Square", 1000, 1000)
     };
-    private static final String[] CATEGORIES = {"General", "Learning", "Office", "Planners"};
+    private static final String[] CATEGORIES = {"General", "Learning", "Office", "Planners", "Materials"};
     private static final String[][] TEMPLATES = {
             {"Blank", "Rule line 1", "Rule line 2", "Ruled", "Grid small", "Grid", "Grid large", "Dotted",
                     Notebook.NOTEBOOK_PAPER, "Infinite"},
             {Notebook.NOTEBOOK_PAPER, "Cornell", "Music", "Dotted"},
             {"Blank", Notebook.NOTEBOOK_PAPER, "Grid", PlannerTemplates.TASK_CHECKLIST},
             {PlannerTemplates.DAILY_AGENDA, PlannerTemplates.DAILY_FOCUS, PlannerTemplates.WEEKLY_BOARDS,
-                    PlannerTemplates.WEEKLY_TIMETABLE, PlannerTemplates.TASK_CHECKLIST, PlannerTemplates.TASK_BOARD, "Planner"}
+                    PlannerTemplates.WEEKLY_TIMETABLE, PlannerTemplates.TASK_CHECKLIST, PlannerTemplates.TASK_BOARD, "Planner"},
+            {PlannerTemplates.LECTURE_REVIEW, PlannerTemplates.LAB_LOG, PlannerTemplates.HABIT_TRACKER}
     };
     private static final int[] PAPER_COLORS = {0xffffffff, 0xff252525, 0xfffcf8e8, 0xffebf9ef, 0xffedf5fc};
     private static final String[] COLOR_NAMES = {"White", "Black", "Ivory", "Mint", "Blue"};
@@ -169,7 +170,7 @@ final class NotebookGallery {
     }
 
     private void refresh() {
-        boolean planner = category == 3 || (category == 2 && PlannerTemplates.isPlanner(selected));
+        boolean planner = category >= 3 || (category == 2 && PlannerTemplates.isPlanner(selected));
         palette.removeAllViews();
         int[] colors = planner ? PLANNER_COLORS : PAPER_COLORS;
         for (int i = 0; i < colors.length; i++) {
