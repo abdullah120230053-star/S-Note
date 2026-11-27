@@ -22,18 +22,16 @@ final class PageBrowser {
     private final MainActivity host;
     private final StudioStyle ui;
     private final Notebook note;
-    private final Paper.Images images;
     private final LruCache<String, Bitmap> backgrounds = new LruCache<>(24);
     private final Set<String> pending = new HashSet<>();
     private final Set<String> unavailable = new HashSet<>();
     private ListView rail;
     private AbsListView dialog;
 
-    PageBrowser(MainActivity host, Notebook note, Paper.Images images) {
+    PageBrowser(MainActivity host, Notebook note) {
         this.host = host;
         this.ui = host.ui;
         this.note = note;
-        this.images = images;
     }
 
     ListView rail(IntConsumer open) {
@@ -117,14 +115,14 @@ final class PageBrowser {
             String description = page.title.isEmpty() ? page.pdfIndex >= 0 ? "PDF" : page.paper : page.title;
             cell.detail.setText(description);
             cell.setContentDescription("Page " + (position + 1) + ", " + description + (current ? ", current page" : ""));
-            cell.preview.bind(page);
+            cell.preview.bind(page, backgrounds.get(page.id));
             requestBackground(page);
             return cell;
         }
     }
 
     private final class Cell extends LinearLayout {
-        final Preview preview;
+        final PageThumbnail preview;
         final TextView label;
         final TextView detail;
 
@@ -133,7 +131,7 @@ final class PageBrowser {
             setOrientation(VERTICAL);
             setGravity(Gravity.CENTER_HORIZONTAL);
             ui.pad(this, 5, 6, 5, 6);
-            preview = new Preview();
+            preview = new PageThumbnail(host, host.library::thumbnailImage);
             preview.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
             addView(preview, new LayoutParams(-1, ui.dp(91)));
             label = ui.text("", 13, ui.ink);
@@ -144,23 +142,6 @@ final class PageBrowser {
             detail.setSingleLine();
             detail.setEllipsize(TextUtils.TruncateAt.END);
             addView(detail);
-        }
-    }
-
-    private final class Preview extends View {
-        private final Paper paper = new Paper();
-        private Notebook.Page page;
-
-        Preview() { super(host); }
-
-        void bind(Notebook.Page value) {
-            page = value;
-            invalidate();
-        }
-
-        @Override protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            if (page != null) drawPreview(canvas, paper, page, backgrounds.get(page.id), images, getWidth(), getHeight());
         }
     }
 

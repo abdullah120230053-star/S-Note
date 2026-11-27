@@ -50,6 +50,10 @@ public final class MainActivity extends Activity {
             VIDEO = 16, SYNC_CREATE = 17, SYNC_CONNECT = 18, AUDIO_IMPORT = 19, DEVICE_UNLOCK = 20;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService work = Executors.newSingleThreadExecutor();
+    private static final ExecutorService DISK = Executors.newSingleThreadExecutor();
+    private java.util.concurrent.Future<?> pendingSave;
+    private long saveRevision;
+    private final Runnable refreshResults = this::refreshLibraryResults;
     private final List<Runnable> afterTask = new ArrayList<>();
     private final Runnable saveAction = this::saveWhenIdle;
     StudioStyle ui;
@@ -84,14 +88,27 @@ public final class MainActivity extends Activity {
         prefs = getSharedPreferences("starrnote", MODE_PRIVATE);
         audio = new AudioPanel(this);
         applyTheme();
-        try {
-            library = new Library(this);
-        } catch (Exception failure) {
-            new AlertDialog.Builder(this).setTitle("Library unavailable")
-                    .setMessage(failure.getLocalizedMessage()).setPositiveButton("Close", (d, i) -> finish())
-                    .setCancelable(false).show();
-            return;
-        }
+        setContentView(ui.text("Opening library…", 18, ui.ink));
+        DISK.execute(() -> {
+            try {
+                Library opened = new Library(this);
+                runOnUiThread(() -> {
+                    if (isDestroyed() || isFinishing()) return;
+                    library = opened;
+                    finishOpening(state);
+                });
+            } catch (Exception failure) {
+                runOnUiThread(() -> {
+                    if (isDestroyed() || isFinishing()) return;
+                    new AlertDialog.Builder(this).setTitle("Library unavailable")
+                            .setMessage(detail(failure)).setPositiveButton("Close", (d, i) -> finish())
+                            .setCancelable(false).show();
+                });
+            }
+        });
+    }
+
+    private void finishOpening(Bundle state) {
         String previous = state == null ? "" : state.getString("note", "");
         for (String id : prefs.getString("editor.tabs", "").split(",")) {
             if (findNotebook(id) != null && !tabIds.contains(id)) tabIds.add(id);
@@ -109,6 +126,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
         if (library != null) openWidget(intent);
     }
 
@@ -156,6 +174,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         main.removeCallbacks(indexSearch);
+        main.removeCallbacks(refreshResults);
         handwritingIndex.clear();
         work.shutdown();
         if (timer != null) timer.cancel();
@@ -195,13 +214,26 @@ public final class MainActivity extends Activity {
     void save() {
         main.removeCallbacks(saveAction);
         if (!dirty || library == null || loading) return;
-        try {
-            library.save();
-            NotebookWidget.publish(this, library.notebooks, null);
-            dirty = false;
-        } catch (Exception failure) {
-            message("Changes are still open. StarrNote could not save them: " + detail(failure));
-        }
+        long revision = ++saveRevision;
+        Callable<Void> snapshot = library.saveSnapshot();
+        dirty = false;
+        pendingSave = DISK.submit(() -> {
+            try {
+                snapshot.call();
+                runOnUiThread(() -> {
+                    if (!isDestroyed() && !loading && revision == saveRevision) {
+                        NotebookWidget.publish(this, library.notebooks, null);
+                    }
+                });
+                return null;
+            } catch (Exception failure) {
+                runOnUiThread(() -> {
+                    if (revision == saveRevision) dirty = true;
+                    if (!isDestroyed()) message("Changes are still open. StarrNote could not save them: " + detail(failure));
+                });
+                throw failure;
+            }
+        });
     }
 
     void message(String text) { Toast.makeText(this, text, Toast.LENGTH_LONG).show(); }
@@ -280,7 +312,7 @@ public final class MainActivity extends Activity {
             @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
             @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
                 query = text.toString();
-                drawResults();
+                scheduleResults();
                 scheduleHandwritingSearch();
             }
             @Override public void afterTextChanged(Editable value) {}
@@ -348,7 +380,16 @@ public final class MainActivity extends Activity {
     private void updateSmartSearch() {
         if (open != null || isDestroyed() || smartSearch == null) return;
         smartSearch.setText(prefs.getBoolean("search.smart", false) ? handwritingIndex.status() : "Smart Search");
-        drawResults();
+        scheduleResults();
+    }
+
+    private void scheduleResults() {
+        main.removeCallbacks(refreshResults);
+        main.postDelayed(refreshResults, 160);
+    }
+
+    private void refreshLibraryResults() {
+        if (open == null && results != null && !loading && !isDestroyed()) drawResults();
     }
 
     private void addCollection(LinearLayout filters, String label, Collection type) {
@@ -514,13 +555,9 @@ public final class MainActivity extends Activity {
     }
 
     private View notebookPreview(Notebook note) {
-        Notebook.Page page = note.pages.get(0);
-        return new View(this) {
-            private final Paper paper = new Paper();
-            @Override protected void onDraw(android.graphics.Canvas canvas) {
-                PageBrowser.drawPreview(canvas, paper, page, null, file -> null, getWidth(), getHeight());
-            }
-        };
+        PageThumbnail thumbnail = new PageThumbnail(this, file -> null);
+        thumbnail.bind(note.pages.get(0), null);
+        return thumbnail;
     }
 
     private String pageCount(Notebook note) { return note.pages.size() == 1 ? "1 page" : note.pages.size() + " pages"; }
@@ -1159,12 +1196,14 @@ public final class MainActivity extends Activity {
             return;
         }
         loading = true;
+        java.util.concurrent.Future<?> saved = pendingSave;
         ProgressDialog progress = new ProgressDialog(this);
         progress.setMessage(label);
         progress.setCancelable(false);
         progress.show();
         work.execute(() -> {
             try {
+                if (saved != null) saved.get();
                 T result = action.call();
                 runOnUiThread(() -> {
                     loading = false;

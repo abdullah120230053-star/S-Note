@@ -53,15 +53,41 @@ final class Notebook {
         return pages.get(currentPage);
     }
 
-    JSONObject json() throws JSONException {
-        JSONArray pageArray = new JSONArray();
-        for (Page page : pages) pageArray.put(page.json());
+    Notebook snapshot() {
+        Notebook copy = new Notebook();
+        copy.id = id;
+        copy.name = name;
+        copy.folder = folder;
+        copy.tags = tags;
+        copy.favorite = favorite;
+        copy.trashed = trashed;
+        copy.deviceLock = deviceLock;
+        copy.updated = updated;
+        copy.cover = cover;
+        copy.currentPage = currentPage;
+        for (Page page : pages) copy.pages.add(page.snapshot());
+        for (Clip clip : clips) {
+            Clip item = new Clip(clip.file, clip.name, clip.page);
+            item.transcript = clip.transcript;
+            item.summary = clip.summary;
+            copy.clips.add(item);
+        }
+        return copy;
+    }
+
+    JSONObject metadata() throws JSONException {
         JSONArray clipArray = new JSONArray();
         for (Clip clip : clips) clipArray.put(clip.json());
         return new JSONObject().put("id", id).put("name", name).put("folder", folder).put("tags", tags)
                 .put("favorite", favorite).put("trashed", trashed).put("deviceLock", deviceLock)
                 .put("updated", updated).put("cover", cover)
-                .put("currentPage", currentPage).put("pages", pageArray).put("clips", clipArray);
+                .put("currentPage", currentPage).put("clips", clipArray);
+    }
+
+    JSONObject json() throws JSONException {
+        JSONArray pageArray = new JSONArray();
+        for (Page page : pages) pageArray.put(page.json());
+        return metadata().put("pages", pageArray);
     }
 
     static Notebook read(JSONObject data) throws JSONException {
@@ -107,6 +133,33 @@ final class Notebook {
             layers.add(new Layer("Ink"));
         }
 
+        Page snapshot() {
+            Page copy = new Page();
+            copy.id = id;
+            copy.paper = paper;
+            copy.paperTheme = paperTheme;
+            copy.paperColor = paperColor;
+            copy.title = title;
+            copy.indexedText = indexedText;
+            copy.background = background;
+            copy.pdfIndex = pdfIndex;
+            copy.width = width;
+            copy.height = height;
+            copy.layers.clear();
+            for (Layer layer : layers) {
+                Layer item = new Layer(layer.name);
+                item.id = layer.id;
+                item.visible = layer.visible;
+                item.locked = layer.locked;
+                item.opacity = layer.opacity;
+                copy.layers.add(item);
+            }
+            // The editor replaces committed marks instead of modifying their points.
+            copy.marks.addAll(marks);
+            copy.deletedLayers.addAll(deletedLayers);
+            return copy;
+        }
+
         boolean infinite() { return paper.equals("Infinite") && background.isEmpty(); }
 
         Page copy() throws JSONException {
@@ -115,17 +168,21 @@ final class Notebook {
             return copy;
         }
 
-        JSONObject json() throws JSONException {
+        JSONObject metadata() throws JSONException {
             JSONArray layerArray = new JSONArray();
             for (Layer layer : layers) layerArray.put(layer.json());
+            return new JSONObject().put("id", id).put("paper", paper).put("paperTheme", paperTheme).put("paperColor", paperColor)
+                    .put("title", title).put("indexedText", indexedText)
+                    .put("background", background).put("pdfIndex", pdfIndex).put("width", width)
+                    .put("height", height).put("layers", layerArray);
+        }
+
+        JSONObject json() throws JSONException {
             JSONArray markArray = new JSONArray();
             for (Mark mark : marks) markArray.put(mark.json());
             JSONArray deleted = new JSONArray();
             for (DeletedLayer layer : deletedLayers) deleted.put(layer.json());
-            return new JSONObject().put("id", id).put("paper", paper).put("paperTheme", paperTheme).put("paperColor", paperColor)
-                    .put("title", title).put("indexedText", indexedText)
-                    .put("background", background).put("pdfIndex", pdfIndex).put("width", width)
-                    .put("height", height).put("layers", layerArray).put("marks", markArray).put("deletedLayers", deleted);
+            return metadata().put("marks", markArray).put("deletedLayers", deleted);
         }
 
         static Page read(JSONObject data) throws JSONException {

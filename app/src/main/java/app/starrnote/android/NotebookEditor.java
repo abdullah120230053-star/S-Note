@@ -164,7 +164,7 @@ final class NotebookEditor implements InkView.Listener {
 
         LinearLayout workspace = ui.row();
         this.workspace = workspace;
-        pageBrowser = new PageBrowser(host, note, this::image);
+        pageBrowser = new PageBrowser(host, note);
         pageRail = pageBrowser.rail(this::go);
         pageRail.setBackgroundColor(ui.page);
         workspace.addView(pageRail, new LinearLayout.LayoutParams(ui.dp(125), -1));

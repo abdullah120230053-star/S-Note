@@ -61,10 +61,10 @@ final class Library {
         }
     }
 
-    private byte[] encode(List<Notebook> source) throws JSONException {
+    private byte[] encode(List<Notebook> source, Map<String, Long> removed) throws JSONException {
         JSONArray array = new JSONArray();
         for (Notebook note : source) array.put(note.json());
-        return new JSONObject().put("version", 1).put("notebooks", array).put("deletions", new JSONObject(deletions)).toString()
+        return new JSONObject().put("version", 1).put("notebooks", array).put("deletions", new JSONObject(removed)).toString()
                 .getBytes(StandardCharsets.UTF_8);
     }
 
@@ -94,14 +94,74 @@ final class Library {
     }
 
     void save() throws IOException, JSONException {
-        byte[] data = encode(notebooks);
+        save(new ArchiveData(notebooks, deletions));
+    }
+
+    java.util.concurrent.Callable<Void> saveSnapshot() {
+        List<Notebook> copy = new ArrayList<>(notebooks.size());
+        for (Notebook note : notebooks) copy.add(note.snapshot());
+        ArchiveData snapshot = new ArchiveData(copy, new HashMap<>(deletions));
+        return () -> {
+            save(snapshot);
+            return null;
+        };
+    }
+
+    private synchronized void save(ArchiveData snapshot) throws IOException, JSONException {
         FileOutputStream stream = index.startWrite();
         try {
-            stream.write(data);
+            java.io.Writer writer = new java.io.BufferedWriter(new java.io.OutputStreamWriter(stream, StandardCharsets.UTF_8));
+            writer.write("{\"version\":1,\"deletions\":");
+            writer.write(new JSONObject(snapshot.deletions()).toString());
+            writer.write(",\"notebooks\":[");
+            boolean firstNote = true;
+            for (Notebook note : snapshot.notebooks()) {
+                if (!firstNote) writer.write(',');
+                firstNote = false;
+                writeArrayStart(writer, note.metadata(), "pages");
+                boolean firstPage = true;
+                for (Notebook.Page page : note.pages) {
+                    if (!firstPage) writer.write(',');
+                    firstPage = false;
+                    writeArrayStart(writer, page.metadata(), "marks");
+                    writeMarks(writer, page.marks);
+                    writer.write("],\"deletedLayers\":[");
+                    boolean firstLayer = true;
+                    for (Notebook.DeletedLayer deleted : page.deletedLayers) {
+                        if (!firstLayer) writer.write(',');
+                        firstLayer = false;
+                        writeArrayStart(writer, new JSONObject().put("layer", deleted.layer().json())
+                                .put("position", deleted.position()), "marks");
+                        writeMarks(writer, deleted.marks());
+                        writer.write("]}");
+                    }
+                    writer.write("]}");
+                }
+                writer.write("]}");
+            }
+            writer.write("]}");
+            writer.flush();
             index.finishWrite(stream);
-        } catch (IOException failure) {
+        } catch (IOException | JSONException | RuntimeException failure) {
             index.failWrite(stream);
             throw failure;
+        }
+    }
+
+    private static void writeArrayStart(java.io.Writer writer, JSONObject object, String key) throws IOException {
+        String fields = object.toString();
+        writer.write(fields, 0, fields.length() - 1);
+        writer.write(',');
+        writer.write(JSONObject.quote(key));
+        writer.write(":[");
+    }
+
+    private static void writeMarks(java.io.Writer writer, List<Notebook.Mark> marks) throws IOException, JSONException {
+        boolean first = true;
+        for (Notebook.Mark mark : marks) {
+            if (!first) writer.write(',');
+            first = false;
+            writer.write(mark.json().toString());
         }
     }
 
@@ -185,6 +245,7 @@ final class Library {
     }
 
     Bitmap image(String name) { return image(file(name), 2000); }
+    Bitmap thumbnailImage(String name) { return image(file(name), 240); }
 
     Bitmap pdfDetail(Notebook.Page page, android.graphics.RectF region, float scale) throws IOException {
         try (ParcelFileDescriptor descriptor = ParcelFileDescriptor.open(file(page.background), ParcelFileDescriptor.MODE_READ_ONLY);
@@ -233,7 +294,7 @@ final class Library {
     File archive() throws IOException, JSONException {
         File temp = File.createTempFile("starrnote-library", ".zip", cache);
         Set<String> names = assets(notebooks);
-        byte[] data = encode(notebooks);
+        byte[] data = encode(notebooks, deletions);
         boolean complete = false;
         try (ZipOutputStream zip = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(temp)))) {
             zip.putNextEntry(new ZipEntry("library.json"));
