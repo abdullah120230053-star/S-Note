@@ -258,6 +258,12 @@ final class Notebook {
 
     record Point(float x, float y, float pressure) {}
 
+    record ImageCrop(float left, float top, float right, float bottom) {
+        static final ImageCrop FULL = new ImageCrop(0, 0, 1, 1);
+        float width() { return right - left; }
+        float height() { return bottom - top; }
+    }
+
     static final class Mark {
         String tool;
         String layer;
@@ -269,6 +275,7 @@ final class Notebook {
         int opacity = 100;
         int pressureSensitivity = 100;
         int lineStyle;
+        ImageCrop crop = ImageCrop.FULL;
         boolean revealed;
         final List<Point> points = new ArrayList<>();
 
@@ -287,6 +294,7 @@ final class Notebook {
             result.opacity = opacity;
             result.pressureSensitivity = pressureSensitivity;
             result.lineStyle = lineStyle;
+            result.crop = crop;
             result.revealed = revealed;
             result.points.addAll(points);
             return result;
@@ -302,10 +310,14 @@ final class Notebook {
         JSONObject json() throws JSONException {
             JSONArray path = new JSONArray();
             for (Point p : points) path.put(p.x).put(p.y).put(p.pressure);
-            return new JSONObject().put("tool", tool).put("layer", layer).put("color", color)
+            JSONObject data = new JSONObject().put("tool", tool).put("layer", layer).put("color", color)
                     .put("thickness", thickness).put("value", value).put("link", link)
                     .put("font", font).put("opacity", opacity).put("pressureSensitivity", pressureSensitivity)
                     .put("revealed", revealed).put("path", path).put("lineStyle", lineStyle);
+            if (!crop.equals(ImageCrop.FULL)) {
+                data.put("crop", new JSONArray().put(crop.left()).put(crop.top()).put(crop.right()).put(crop.bottom()));
+            }
+            return data;
         }
 
         static Mark read(JSONObject data) throws JSONException {
@@ -318,6 +330,14 @@ final class Notebook {
             mark.pressureSensitivity = Math.max(0, Math.min(100, data.optInt("pressureSensitivity", 100)));
             mark.revealed = data.optBoolean("revealed");
             mark.lineStyle = Math.max(0, Math.min(2, data.optInt("lineStyle")));
+            JSONArray crop = data.optJSONArray("crop");
+            if (crop != null) {
+                float left = (float) crop.optDouble(0, 0), top = (float) crop.optDouble(1, 0);
+                float right = (float) crop.optDouble(2, 1), bottom = (float) crop.optDouble(3, 1);
+                if (left >= 0 && top >= 0 && right <= 1 && bottom <= 1 && right > left && bottom > top) {
+                    mark.crop = new ImageCrop(left, top, right, bottom);
+                }
+            }
             JSONArray path = data.getJSONArray("path");
             for (int i = 0; i + 2 < path.length(); i += 3) {
                 mark.points.add(new Point((float) path.getDouble(i), (float) path.getDouble(i + 1),

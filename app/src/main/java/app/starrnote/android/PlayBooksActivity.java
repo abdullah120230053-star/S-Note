@@ -48,6 +48,8 @@ public final class PlayBooksActivity extends Activity {
     private BookPages loaded;
     private boolean spread, square, turning, busy, importing;
     private float pendingTurn;
+    private static final String[] PAGE_TURNS = {"3D flip", "Slide", "Scroll"};
+    private int pageTurn;
     private volatile int generation;
     private int page;
     private float textSize;
@@ -65,6 +67,7 @@ public final class PlayBooksActivity extends Activity {
         spread = books.getBoolean("spread", false);
         square = books.getBoolean("square", false);
         textSize = books.getFloat("textSize", 18);
+        pageTurn = Math.max(0, Math.min(2, books.getInt("pageTurn", 0)));
         bookId = state == null ? books.getString("last", null) : state.getString("book");
 
         LinearLayout root = ui.column();
@@ -94,6 +97,7 @@ public final class PlayBooksActivity extends Activity {
         ui.chip(controls, ui.button("A−", false, () -> resizeText(-2)));
         ui.chip(controls, ui.button("A+", false, () -> resizeText(2)));
         ui.chip(controls, ui.button("Page shape", false, this::pageShape));
+        ui.chip(controls, ui.button("Page turn", false, this::pageTurnOptions));
         ui.chip(controls, ui.button("Chapters", false, this::chapters));
         refreshMode();
         rail.addView(controls);
@@ -204,6 +208,17 @@ public final class PlayBooksActivity extends Activity {
 
     private void refreshMode() { mode.setText(spread ? "Two pages" : "Single page"); }
 
+    private void pageTurnOptions() {
+        if (turning || busy) return;
+        new AlertDialog.Builder(this).setTitle("Page turn")
+                .setSingleChoiceItems(PAGE_TURNS, pageTurn, (dialog, which) -> {
+                    pageTurn = which;
+                    books.edit().putInt("pageTurn", which).apply();
+                    dialog.dismiss();
+                    if (loaded != null) showPage();
+                }).setNegativeButton("Cancel", null).show();
+    }
+
     private void resizeText(int step) {
         textSize = Math.max(12, Math.min(32, textSize + step));
         books.edit().putFloat("textSize", textSize).apply();
@@ -289,6 +304,7 @@ public final class PlayBooksActivity extends Activity {
             if (pendingTurn != 0) {
                 pendingTurn = 0;
                 sheet.setRotationY(0);
+                sheet.setTranslationX(0);
                 sheet.setAlpha(1);
                 turning = false;
             }
@@ -306,11 +322,19 @@ public final class PlayBooksActivity extends Activity {
         int section = loaded.chapter();
         boolean nextSection = target < 0 || target >= loaded.count();
         if (nextSection && (section + direction < 0 || section + direction >= loaded.chapters())) return;
+        if (pageTurn == 2) {
+            if (nextSection) request(section + direction, direction > 0 ? 0 : Integer.MAX_VALUE);
+            else { page = target; showPage(); }
+            return;
+        }
         turning = true;
         float side = direction * (loaded.rtl() ? -1 : 1);
         sheet.setCameraDistance(8000 * getResources().getDisplayMetrics().density);
         sheet.setPivotX(side > 0 ? sheet.getWidth() * .18f : sheet.getWidth() * .82f);
-        sheet.animate().rotationY(-74 * side).alpha(.55f).setDuration(135).withEndAction(() -> {
+        android.view.ViewPropertyAnimator outgoing = sheet.animate().alpha(.55f).setDuration(135);
+        if (pageTurn == 1) outgoing.translationX(-sheet.getWidth() * .36f * side);
+        else outgoing.rotationY(-74 * side);
+        outgoing.withEndAction(() -> {
             if (nextSection) {
                 pendingTurn = side;
                 request(section + direction, direction > 0 ? 0 : Integer.MAX_VALUE);
@@ -323,11 +347,18 @@ public final class PlayBooksActivity extends Activity {
     }
 
     private void finishTurn(float side) {
-        sheet.setRotationY(74 * side);
-        sheet.animate().rotationY(0).alpha(1).setDuration(155).withEndAction(() -> turning = false).start();
+        if (pageTurn == 1) sheet.setTranslationX(sheet.getWidth() * .36f * side);
+        else sheet.setRotationY(74 * side);
+        sheet.animate().rotationY(0).translationX(0).alpha(1).setDuration(155)
+                .withEndAction(() -> turning = false).start();
     }
 
     private void showPage() {
+        sheet.scrollPosition = page / (spread ? 2 : 1) * (float) sheet.pagePitch();
+        updatePosition();
+    }
+
+    private void updatePosition() {
         title.setText(loaded.title());
         status.setText(String.format(Locale.ROOT, "Section %d/%d · %d–%d of %d", loaded.chapter() + 1,
                 loaded.chapters(), page + 1, Math.min(loaded.count(), page + (spread ? 2 : 1)), loaded.count()));
@@ -357,6 +388,7 @@ public final class PlayBooksActivity extends Activity {
     private final class SheetView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private float down;
+        private float downY, originalScroll, scrollPosition;
 
         SheetView() {
             super(PlayBooksActivity.this);
@@ -373,17 +405,30 @@ public final class PlayBooksActivity extends Activity {
             return square ? Math.max(1, Math.min(height, paperWidth())) : height;
         }
 
+        int pagePitch() { return paperHeight() + ui.dp(12); }
+
         @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) { post(PlayBooksActivity.this::reflow); }
 
         @Override protected void onDraw(Canvas canvas) {
             int width = paperWidth(), height = paperHeight(), leaves = spread ? 2 : 1;
             float left = (getWidth() - width * leaves) / 2f, top = (getHeight() - height) / 2f;
+            if (pageTurn == 2 && loaded != null) {
+                int pitch = pagePitch(), first = Math.max(0, (int) (scrollPosition / pitch));
+                for (int row = first; row * leaves < loaded.count(); row++) {
+                    float y = top + row * pitch - scrollPosition;
+                    if (y >= getHeight()) break;
+                    drawPages(canvas, row * leaves, width, height, leaves, left, y);
+                }
+            } else drawPages(canvas, page, width, height, leaves, left, top);
+        }
+
+        private void drawPages(Canvas canvas, int first, int width, int height, int leaves, float left, float top) {
             for (int slot = 0; slot < leaves; slot++) {
                 float x = left + slot * width;
                 paint.setColor(PAPER);
                 canvas.drawRoundRect(x + 1, top, x + width - 1, top + height, ui.dp(6), ui.dp(6), paint);
                 if (loaded == null || loaded.width() != width || loaded.height() != height) continue;
-                int index = page + (loaded.rtl() ? leaves - slot - 1 : slot);
+                int index = first + (loaded.rtl() ? leaves - slot - 1 : slot);
                 if (index >= loaded.count()) continue;
                 int start = loaded.layout().getLineTop(loaded.breaks()[index]);
                 int end = loaded.layout().getLineTop(loaded.breaks()[index + 1]);
@@ -398,7 +443,30 @@ public final class PlayBooksActivity extends Activity {
         }
 
         @Override public boolean onTouchEvent(MotionEvent event) {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) { down = event.getX(); return true; }
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                down = event.getX();
+                downY = event.getY();
+                originalScroll = scrollPosition;
+                return true;
+            }
+            if (pageTurn == 2 && loaded != null && !busy) {
+                int leaves = spread ? 2 : 1;
+                float max = (loaded.count() - 1) / leaves * pagePitch();
+                float desired = originalScroll + downY - event.getY();
+                if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+                    scrollPosition = Math.max(0, Math.min(max, desired));
+                    postInvalidateOnAnimation();
+                } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                    page = Math.min((loaded.count() - 1) / leaves,
+                            Math.round(scrollPosition / pagePitch())) * leaves;
+                    updatePosition();
+                    if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                        if (desired < -ui.dp(42)) turn(-1);
+                        else if (desired > max + ui.dp(42)) turn(1);
+                    }
+                }
+                return true;
+            }
             if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                 float delta = event.getX() - down;
                 int direction = Math.abs(delta) > ui.dp(36) ? (delta < 0 ? 1 : -1)

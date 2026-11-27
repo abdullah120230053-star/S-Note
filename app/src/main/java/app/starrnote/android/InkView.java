@@ -766,6 +766,42 @@ final class InkView extends View {
         return editable(mark) && (mark.tool.equals("Text") || mark.tool.equals("Link")) ? mark : null;
     }
 
+    Notebook.Mark editableImage() {
+        if (selected.size() != 1) return null;
+        Notebook.Mark mark = selected.iterator().next();
+        return "Image".equals(mark.tool) && editable(mark) && mark.points.size() >= 2 ? mark : null;
+    }
+
+    void editImage(Notebook.Mark mark, float factor, Notebook.ImageCrop crop) {
+        if (editableImage() != mark) return;
+        RectF rectangle = paper.bounds(mark);
+        float width = rectangle.width() * factor;
+        float height = rectangle.height() * factor;
+        if (!mark.crop.equals(crop)) {
+            width *= crop.width() / mark.crop.width();
+            height *= crop.height() / mark.crop.height();
+        }
+        if (width <= 0 || height <= 0) return;
+        float left = rectangle.centerX() - width / 2, top = rectangle.centerY() - height / 2;
+        if (!page.infinite()) {
+            float fit = Math.min(1, Math.min(page.width / width, page.height / height));
+            width *= fit;
+            height *= fit;
+            left = Math.max(0, Math.min(rectangle.centerX() - width / 2, page.width - width));
+            top = Math.max(0, Math.min(rectangle.centerY() - height / 2, page.height - height));
+        }
+        snapshot();
+        Notebook.Mark replacement = mark.copy();
+        replacement.thickness = width;
+        replacement.crop = crop;
+        replacement.points.set(0, new Notebook.Point(left, top, 1));
+        replacement.points.set(1, new Notebook.Point(left + width, top + height, 1));
+        page.marks.set(page.marks.indexOf(mark), replacement);
+        selected.clear();
+        selected.add(replacement);
+        finishChange();
+    }
+
     void editText(Notebook.Mark mark, String value, String address) {
         if (!selected.contains(mark) || !editable(mark)) return;
         snapshot();
@@ -819,7 +855,13 @@ final class InkView extends View {
         float maxHeight = Math.min(570, (bottom - top) * .65f);
         float width = Math.min(maxWidth, maxHeight / ratio);
         float height = width * ratio;
+        Notebook.Layer active = page.layer(layer);
+        if (active.locked || !active.visible || width <= 0 || height <= 0) return;
         add("Image", file, "", (left + right - width) / 2, (top + bottom - height) / 2, width, height);
+        selected.clear();
+        selected.add(page.marks.get(page.marks.size() - 1));
+        listener.selectionChanged(1);
+        invalidate();
     }
 
     void frameInk() {

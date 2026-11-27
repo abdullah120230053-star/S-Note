@@ -1469,6 +1469,14 @@ final class NotebookEditor implements InkView.Listener {
         Map<String, Runnable> choices = new LinkedHashMap<>();
         Notebook.Mark text = ink.editableText();
         if (text != null) choices.put("Edit text", () -> editText(text));
+        Notebook.Mark image = ink.editableImage();
+        if (image != null) {
+            choices.put("Resize image", () -> resizeImage(image));
+            choices.put("Crop image", () -> cropImage(image));
+            if (!image.crop.equals(Notebook.ImageCrop.FULL)) {
+                choices.put("Reset image crop", () -> ink.editImage(image, 1, Notebook.ImageCrop.FULL));
+            }
+        }
         choices.put("Copy selection", () -> {
             host.markClipboard = ink.copySelection();
             host.message("Selection copied");
@@ -1481,6 +1489,81 @@ final class NotebookEditor implements InkView.Listener {
         choices.put("Recognize selected handwriting", this::recognize);
         choices.put("Delete selection", ink::deleteSelection);
         host.options("Selection", choices);
+    }
+
+    private void resizeImage(Notebook.Mark mark) {
+        LinearLayout form = host.form();
+        TextView value = ui.text("100% of current size", 14, ui.ink);
+        SeekBar size = new SeekBar(panelContext());
+        size.setMin(10);
+        size.setMax(300);
+        size.setProgress(100);
+        size.setContentDescription("Image size");
+        adjust(size, percent -> value.setText(percent + "% of current size"));
+        form.addView(value);
+        form.addView(size);
+        new AlertDialog.Builder(panelContext()).setTitle("Resize image").setView(form)
+                .setPositiveButton("Apply", (dialog, which) -> {
+                    int percent = size.getProgress();
+                    if (percent != 100) ink.editImage(mark, percent / 100f, mark.crop);
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void cropImage(Notebook.Mark mark) {
+        Bitmap source = image(mark.value);
+        if (source == null) { host.message("The image is unavailable"); return; }
+        LinearLayout form = host.form();
+        int[] trim = {Math.round(mark.crop.left() * 100), Math.round(mark.crop.top() * 100),
+                Math.round((1 - mark.crop.right()) * 100), Math.round((1 - mark.crop.bottom()) * 100)};
+        View preview = new View(host) {
+            private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG);
+            private final android.graphics.RectF frame = new android.graphics.RectF();
+            @Override protected void onDraw(android.graphics.Canvas canvas) {
+                float scale = Math.min(getWidth() / (float) source.getWidth(), getHeight() / (float) source.getHeight());
+                float w = source.getWidth() * scale, h = source.getHeight() * scale;
+                float x = (getWidth() - w) / 2, y = (getHeight() - h) / 2;
+                frame.set(x, y, x + w, y + h);
+                canvas.drawBitmap(source, null, frame, paint);
+                int save = canvas.save();
+                canvas.clipOutRect(x + w * trim[0] / 100, y + h * trim[1] / 100,
+                        x + w * (100 - trim[2]) / 100, y + h * (100 - trim[3]) / 100);
+                paint.setColor(0xaa000000);
+                canvas.drawRect(frame, paint);
+                canvas.restoreToCount(save);
+                paint.setColor(android.graphics.Color.WHITE);
+            }
+        };
+        preview.setContentDescription("Image crop preview");
+        form.addView(preview, new LinearLayout.LayoutParams(-1, ui.dp(155)));
+        String[] edges = {"Left", "Top", "Right", "Bottom"};
+        SeekBar[] bars = new SeekBar[4];
+        TextView[] labels = new TextView[4];
+        for (int i = 0; i < edges.length; i++) {
+            int edge = i;
+            labels[i] = ui.text(edges[i] + " · " + trim[i] + "%", 13, ui.ink);
+            form.addView(labels[i]);
+            SeekBar slider = new SeekBar(panelContext());
+            bars[i] = slider;
+            slider.setMax(95);
+            slider.setProgress(trim[i]);
+            slider.setContentDescription("Trim " + edges[i].toLowerCase(java.util.Locale.ROOT));
+            form.addView(slider);
+            adjust(slider, value -> {
+                int opposite = (edge + 2) % 4;
+                trim[edge] = Math.min(value, Math.max(0, 95 - trim[opposite]));
+                if (trim[edge] != value) bars[edge].setProgress(trim[edge]);
+                labels[edge].setText(edges[edge] + " · " + trim[edge] + "%");
+                preview.invalidate();
+            });
+        }
+        ScrollView scroll = new ScrollView(host);
+        scroll.addView(form);
+        new AlertDialog.Builder(panelContext()).setTitle("Crop image").setView(scroll)
+                .setPositiveButton("Apply", (dialog, which) -> {
+                    Notebook.ImageCrop crop = new Notebook.ImageCrop(trim[0] / 100f, trim[1] / 100f,
+                            (100 - trim[2]) / 100f, (100 - trim[3]) / 100f);
+                    if (!crop.equals(mark.crop)) ink.editImage(mark, 1, crop);
+                }).setNegativeButton("Cancel", null).show();
     }
 
     private void editText(Notebook.Mark mark) {
@@ -1586,8 +1669,9 @@ final class NotebookEditor implements InkView.Listener {
     }
 
     void addImage(Imports.Image image) {
-        ink.insertImage(image.name(), image.ratio());
         setTool("Lasso");
+        ink.insertImage(image.name(), image.ratio());
+        if (ink.editableImage() != null) selectionOptions();
     }
 
     boolean canInsertImage() {

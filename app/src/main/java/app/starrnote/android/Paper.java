@@ -238,7 +238,14 @@ final class Paper {
                 Bitmap image = images.get(mark.value);
                 if (image != null) {
                     paint.setColor(Color.WHITE);
-                    canvas.drawBitmap(image, null, bounds(mark), paint);
+                    Notebook.ImageCrop crop = mark.crop;
+                    android.graphics.Rect source = null;
+                    if (!crop.equals(Notebook.ImageCrop.FULL)) {
+                        source = new android.graphics.Rect((int) (crop.left() * image.getWidth()),
+                                (int) (crop.top() * image.getHeight()), (int) Math.ceil(crop.right() * image.getWidth()),
+                                (int) Math.ceil(crop.bottom() * image.getHeight()));
+                    }
+                    canvas.drawBitmap(image, source, bounds(mark), paint);
                 }
             }
             case "Rectangle" -> canvas.drawRect(bounds(mark), paint);
