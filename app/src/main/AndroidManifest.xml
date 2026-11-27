@@ -18,6 +18,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".PlayBooksActivity" android:exported="false" android:label="Play Books"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
         <activity android:name=".VideoActivity" android:exported="false"
             android:supportsPictureInPicture="true"
             android:configChanges="screenSize|smallestScreenSize|orientation|screenLayout" />

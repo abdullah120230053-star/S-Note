@@ -272,6 +272,7 @@ public final class MainActivity extends Activity {
             top.addView(new View(this), spacer);
         }
         top.addView(brand, new LinearLayout.LayoutParams(0, ui.dp(49), 1));
+        ui.chip(top, ui.button("Play Books", false, () -> startActivity(new Intent(this, PlayBooksActivity.class))));
         top.addView(ui.button("Settings", false, this::settings));
         root.addView(top);
 
