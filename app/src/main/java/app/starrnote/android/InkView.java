@@ -28,8 +28,8 @@ final class InkView extends View {
 
     private final Notebook.Page page;
     private final Paper paper = new Paper();
-    private final InfiniteRecording infiniteRecording = android.os.Build.VERSION.SDK_INT >= 29
-            ? new InfiniteRecording() : null;
+    private final PageRecording pageRecording = android.os.Build.VERSION.SDK_INT >= 29
+            ? new PageRecording() : null;
     private boolean paperChanged = true;
     private final Paper.Images images;
     private final Listener listener;
@@ -89,7 +89,7 @@ final class InkView extends View {
 
     void setBackgroundPage(Bitmap bitmap) {
         background = bitmap;
-        invalidate();
+        invalidatePaper();
     }
 
     void selectLayer(String id) { layer = id; }
@@ -193,6 +193,7 @@ final class InkView extends View {
                 detailBitmap = bitmap;
                 detailRegion = region;
                 detailScale = resolution;
+                paperChanged = true;
             }
             invalidate();
         });
@@ -200,7 +201,7 @@ final class InkView extends View {
 
     @Override protected void onDetachedFromWindow() {
         removeCallbacks(renderDetail);
-        if (android.os.Build.VERSION.SDK_INT >= 29 && infiniteRecording != null) infiniteRecording.discard();
+        if (android.os.Build.VERSION.SDK_INT >= 29 && pageRecording != null) pageRecording.discard();
         super.onDetachedFromWindow();
     }
 
@@ -212,22 +213,25 @@ final class InkView extends View {
     }
 
     @android.annotation.TargetApi(29)
-    private final class InfiniteRecording {
-        private final android.graphics.RenderNode node = new android.graphics.RenderNode("Infinite page");
+    private final class PageRecording {
+        private final android.graphics.RenderNode node = new android.graphics.RenderNode("Committed page");
         private float left, top, zoom;
         private int width, height;
 
         void draw(Canvas canvas, float x, float y, float scale) {
             int viewWidth = getWidth(), viewHeight = getHeight();
-            if (paperChanged || !node.hasDisplayList() || x != left || y != top || scale != zoom
+            int margin = page.infinite() ? Math.min(160, Math.min(viewWidth, viewHeight) / 4) : 0;
+            if (paperChanged || !node.hasDisplayList() || Math.abs(x - left) > margin
+                    || Math.abs(y - top) > margin || scale != zoom
                     || viewWidth != width || viewHeight != height) {
-                node.setPosition(0, 0, viewWidth, viewHeight);
-                Canvas recording = node.beginRecording(viewWidth, viewHeight);
+                int recordedWidth = viewWidth + 2 * margin, recordedHeight = viewHeight + 2 * margin;
+                node.setPosition(0, 0, recordedWidth, recordedHeight);
+                Canvas recording = node.beginRecording(recordedWidth, recordedHeight);
                 try {
-                    recording.clipRect(0, 0, viewWidth, viewHeight);
-                    recording.translate(x, y);
+                    recording.clipRect(0, 0, recordedWidth, recordedHeight);
+                    recording.translate(x + margin, y + margin);
                     recording.scale(scale, scale);
-                    paper.draw(recording, page, null, images, charcoalWorkspace);
+                    paper.draw(recording, page, background, images, charcoalWorkspace, detailBitmap, detailRegion);
                 } finally {
                     node.endRecording();
                 }
@@ -238,7 +242,11 @@ final class InkView extends View {
                 height = viewHeight;
                 paperChanged = false;
             }
+            canvas.save();
+            canvas.clipRect(0, 0, viewWidth, viewHeight);
+            canvas.translate(x - left - margin, y - top - margin);
             canvas.drawRenderNode(node);
+            canvas.restore();
         }
 
         void discard() { node.discardDisplayList(); }
@@ -249,10 +257,9 @@ final class InkView extends View {
         requestPdfDetail();
         canvas.drawColor(charcoalWorkspace ? 0xff353535 : 0xffdce5e0);
         float x = originX(), y = originY(), scale = scale();
-        boolean reusePaper = android.os.Build.VERSION.SDK_INT >= 29 && infiniteRecording != null
-                && canvas.isHardwareAccelerated() && page.infinite()
+        boolean reusePaper = android.os.Build.VERSION.SDK_INT >= 29 && pageRecording != null
+                && canvas.isHardwareAccelerated()
                 && getWidth() > 0 && getHeight() > 0;
-        if (android.os.Build.VERSION.SDK_INT >= 29 && reusePaper) infiniteRecording.draw(canvas, x, y, scale);
         canvas.save();
         canvas.translate(x, y);
         canvas.scale(scale, scale);
@@ -261,7 +268,13 @@ final class InkView extends View {
             overlay.setStyle(Paint.Style.FILL);
             canvas.drawRect(3, 7, page.width + 5, page.height + 7, overlay);
         }
-        if (!reusePaper) paper.draw(canvas, page, background, images, charcoalWorkspace, detailBitmap, detailRegion);
+        if (android.os.Build.VERSION.SDK_INT >= 29 && reusePaper) {
+            canvas.restore();
+            pageRecording.draw(canvas, x, y, scale);
+            canvas.save();
+            canvas.translate(x, y);
+            canvas.scale(scale, scale);
+        } else paper.draw(canvas, page, background, images, charcoalWorkspace, detailBitmap, detailRegion);
         if (!page.infinite()) canvas.clipRect(0, 0, page.width, page.height);
         if (draft != null) {
             int opacity = tool.equals("Laser pointer") ? 100 : page.layer(draft.layer).opacity;
@@ -401,7 +414,7 @@ final class InkView extends View {
                 }
                 update(localX(event.getX(active)), localY(event.getY(active)), event.getPressure(active));
             }
-            invalidate();
+            postInvalidateOnAnimation();
             return true;
         }
         if ((action == MotionEvent.ACTION_POINTER_UP && event.getPointerId(index) == pointerId)
@@ -677,10 +690,8 @@ final class InkView extends View {
             if (!canErase(mark)) continue;
             List<Notebook.Mark> pieces = null;
             if (eraseMode == 1 && StrokeCuts.supports(mark)) {
-                RectF bounds = paper.bounds(mark);
                 float reach = radius + mark.thickness * .5f;
-                bounds.inset(-reach, -reach);
-                if (!bounds.contains(x, y)) continue;
+                if (!paper.nearBounds(mark, x, y, reach)) continue;
                 pieces = StrokeCuts.cut(mark, x, y, reach);
                 if (pieces == null) continue;
             } else {

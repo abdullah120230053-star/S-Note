@@ -52,7 +52,7 @@ public final class MainActivity extends Activity {
     private final ExecutorService work = Executors.newSingleThreadExecutor();
     private static final ExecutorService DISK = Executors.newSingleThreadExecutor();
     private java.util.concurrent.Future<?> pendingSave;
-    private long saveRevision;
+    private volatile long saveRevision;
     private final Runnable refreshResults = this::refreshLibraryResults;
     private final List<Runnable> afterTask = new ArrayList<>();
     private final Runnable saveAction = this::saveWhenIdle;
@@ -218,6 +218,8 @@ public final class MainActivity extends Activity {
         Callable<Void> snapshot = library.saveSnapshot();
         dirty = false;
         pendingSave = DISK.submit(() -> {
+            // A newer snapshot contains every committed edit in this queued snapshot.
+            if (revision != saveRevision) return null;
             try {
                 snapshot.call();
                 runOnUiThread(() -> {

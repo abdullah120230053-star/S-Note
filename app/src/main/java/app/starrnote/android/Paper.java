@@ -56,7 +56,6 @@ final class Paper {
             entry.bounds.right = Math.max(entry.bounds.right, point.x());
             entry.bounds.bottom = Math.max(entry.bounds.bottom, point.y());
         }
-        entry.bounds.inset(-2 * mark.thickness, -2 * mark.thickness);
         return entry;
     }
     private final PlannerTemplates planner = new PlannerTemplates();
@@ -89,7 +88,9 @@ final class Paper {
                 if (!mark.layer.equals(layer.id) || mark.points.isEmpty()) continue;
                 if (Brushes.isInk(mark.tool) || Brushes.isMarker(mark.tool)) {
                     RectF bounds = geometry(mark).bounds;
-                    if (!bounds.intersects(clip.left, clip.top, clip.right, clip.bottom)) continue;
+                    float padding = 2 * mark.thickness;
+                    if (bounds.right + padding <= clip.left || bounds.left - padding >= clip.right
+                            || bounds.bottom + padding <= clip.top || bounds.top - padding >= clip.bottom) continue;
                 }
                 drawMark(canvas, mark, images);
             }
@@ -476,6 +477,7 @@ final class Paper {
 
     RectF bounds(Notebook.Mark mark) {
         if (mark.points.isEmpty()) return new RectF();
+        if (Brushes.isInk(mark.tool) || Brushes.isMarker(mark.tool)) return new RectF(geometry(mark).bounds);
         Notebook.Point first = mark.points.get(0);
         if (Arrays.asList("Text", "Link", "Sticker").contains(mark.tool)) {
             type.setTextSize(mark.thickness);
@@ -495,10 +497,7 @@ final class Paper {
     }
 
     boolean hit(Notebook.Mark mark, float x, float y, float tolerance) {
-        if (mark.points.isEmpty()) return false;
-        RectF box = bounds(mark);
-        box.inset(-tolerance, -tolerance);
-        if (!box.contains(x, y)) return false;
+        if (!nearBounds(mark, x, y, tolerance)) return false;
         if (Arrays.asList("Text", "Image", "Link", "Sticker", "Ellipse", "Rectangle", "Table").contains(mark.tool)) return true;
         double range = Math.max(tolerance, mark.thickness / 2);
         Notebook.Point previous = mark.points.get(0);
@@ -511,5 +510,12 @@ final class Paper {
             previous = point;
         }
         return false;
+    }
+
+    boolean nearBounds(Notebook.Mark mark, float x, float y, float tolerance) {
+        if (mark.points.isEmpty()) return false;
+        RectF box = Brushes.isInk(mark.tool) || Brushes.isMarker(mark.tool) ? geometry(mark).bounds : bounds(mark);
+        return x >= box.left - tolerance && x < box.right + tolerance
+                && y >= box.top - tolerance && y < box.bottom + tolerance;
     }
 }
