@@ -1,5 +1,6 @@
 package app.starrnote.android;
 
+import android.animation.ValueAnimator;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
@@ -69,6 +70,11 @@ final class NotebookEditor implements InkView.Listener {
     };
     private final Map<String, ImageButton> buttons = new LinkedHashMap<>();
     private InkView ink;
+    private InkView adjacentPage;
+    private int adjacentIndex = -1;
+    private float pageDrag;
+    private ValueAnimator pageTurn;
+    private boolean horizontalPages;
     private ImageButton toolsButton;
     private String selectedTool = Brushes.PEN;
     private String pen = Brushes.PEN, pencil = Brushes.PENCIL, highlighter = Brushes.HIGHLIGHTER;
@@ -84,6 +90,7 @@ final class NotebookEditor implements InkView.Listener {
         this.host = host;
         this.note = note;
         ui = host.ui;
+        horizontalPages = host.prefs.getBoolean("notes.horizontal_pages", false);
         pen = host.prefs.getString("brush.selected.pen", Brushes.PEN);
         pencil = host.prefs.getString("brush.selected.pencil", Brushes.PENCIL);
         highlighter = host.prefs.getString("brush.selected.highlighter", Brushes.HIGHLIGHTER);
@@ -511,10 +518,14 @@ final class NotebookEditor implements InkView.Listener {
     private void hideZoom() { zoomLevel.setVisibility(View.GONE); }
 
     void refreshPage() {
+        cancelPageTurn();
+        showPage(null);
+    }
+
+    private void showPage(InkView prepared) {
         if (ink != null) stage.removeView(ink);
         Notebook.Page page = note.current();
-        ink = new InkView(host, page, this::image, this);
-        ink.charcoalWorkspace = compact;
+        ink = prepared == null ? createCanvas(page) : prepared;
         InkView view = ink;
         if (page.pdfIndex >= 0) {
             view.pdfDetail = (region, scale, callback) -> host.readPdfDetail(page, region, scale, callback);
@@ -524,13 +535,107 @@ final class NotebookEditor implements InkView.Listener {
         zoomLevel.removeCallbacks(hideZoomLevel);
         hideZoom();
         applyPreferences();
-        stage.addView(ink, 0, new FrameLayout.LayoutParams(-1, -1));
+        if (prepared == null) stage.addView(ink, 0, new FrameLayout.LayoutParams(-1, -1));
+        setPageOffset(view, 0);
         selectionChanged(0);
         pageBrowser.refresh(true);
-        host.readBackground(page, image -> {
-            if (ink == view && host.editor == this) view.setBackgroundPage(image);
+        if (prepared == null) loadPageBackground(page, view, true);
+    }
+
+    private InkView createCanvas(Notebook.Page page) {
+        InkView view = new InkView(host, page, this::image, this);
+        view.charcoalWorkspace = compact;
+        return view;
+    }
+
+    private void loadPageBackground(Notebook.Page page, InkView view, boolean showError) {
+        host.readBackground(page, 0, image -> {
+            if ((ink == view || adjacentPage == view) && host.editor == this) view.setBackgroundPage(image);
             else if (image != null) image.recycle();
+        }, showError);
+    }
+
+    @Override public void dragPage(float offset) {
+        float extent = pageExtent();
+        pageDrag = Math.max(-extent, Math.min(extent, offset));
+        int next = note.currentPage + (pageDrag < 0 ? 1 : -1);
+        if (next != adjacentIndex) discardAdjacentPage();
+        if (next >= 0 && next < note.pages.size() && adjacentPage == null) {
+            Notebook.Page page = note.pages.get(next);
+            InkView view = createCanvas(page);
+            adjacentPage = view;
+            adjacentIndex = next;
+            view.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            stage.addView(view, 0, new FrameLayout.LayoutParams(-1, -1));
+            view.postDelayed(() -> {
+                if (view == ink || view == adjacentPage) loadPageBackground(page, view, view == ink);
+            }, 55);
+        }
+        positionPages(pageDrag);
+    }
+
+    @Override public void finishPageDrag(boolean turn) {
+        if (!turn || adjacentPage == null) {
+            boolean append = turn && pageDrag < 0 && note.currentPage == note.pages.size() - 1
+                    && host.prefs.getBoolean("auto_page", false);
+            cancelPageTurn();
+            if (append) go(note.pages.size());
+            return;
+        }
+        ink.pageTurning = true;
+        ValueAnimator animation = ValueAnimator.ofFloat(pageDrag, Math.copySign(pageExtent(), pageDrag));
+        pageTurn = animation;
+        animation.setDuration(155);
+        animation.addUpdateListener(value -> positionPages((float) value.getAnimatedValue()));
+        animation.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(android.animation.Animator done) {
+                if (pageTurn != animation) return;
+                pageTurn = null;
+                note.currentPage = adjacentIndex;
+                InkView next = adjacentPage;
+                adjacentPage = null;
+                adjacentIndex = -1;
+                pageDrag = 0;
+                next.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+                host.bookmark();
+                showPage(next);
+            }
         });
+        animation.start();
+    }
+
+    private float pageExtent() { return horizontalPages ? stage.getWidth() : stage.getHeight(); }
+
+    private void positionPages(float offset) {
+        if (adjacentPage == null) {
+            setPageOffset(ink, 0);
+            return;
+        }
+        setPageOffset(ink, offset);
+        setPageOffset(adjacentPage, offset + Math.copySign(pageExtent(), adjacentIndex - note.currentPage));
+    }
+
+    private void setPageOffset(InkView view, float offset) {
+        view.setTranslationX(horizontalPages ? offset : 0);
+        view.setTranslationY(horizontalPages ? 0 : offset);
+    }
+
+    private void discardAdjacentPage() {
+        if (adjacentPage != null) stage.removeView(adjacentPage);
+        adjacentPage = null;
+        adjacentIndex = -1;
+    }
+
+    private void cancelPageTurn() {
+        ValueAnimator animation = pageTurn;
+        pageTurn = null;
+        if (animation != null) animation.cancel();
+        discardAdjacentPage();
+        pageDrag = 0;
+        if (ink != null) {
+            ink.pageTurning = false;
+            setPageOffset(ink, 0);
+        }
     }
 
     private Bitmap image(String file) {
@@ -598,6 +703,7 @@ final class NotebookEditor implements InkView.Listener {
     private void pages() {
         Map<String, Runnable> choices = new LinkedHashMap<>();
         choices.put("Go to page", () -> pageBrowser.openDialog(this::go));
+        choices.put("Page turning", this::choosePageTurning);
         if (canShowPageRail()) choices.put(showPageRail ? "Hide page sidebar" : "Show page sidebar", this::browsePages);
         choices.put("Add page", this::newPage);
         choices.put("Import pages", host::importPages);
@@ -654,6 +760,21 @@ final class NotebookEditor implements InkView.Listener {
                     refreshPage();
                 }).setNegativeButton("Cancel", null).show());
         host.options("Pages", choices);
+    }
+
+    private void choosePageTurning() {
+        new AlertDialog.Builder(host).setTitle("Page turning")
+                .setSingleChoiceItems(new String[]{"Vertical scroll", "Horizontal slide"}, horizontalPages ? 1 : 0,
+                        (dialog, choice) -> {
+                            cancelPageTurn();
+                            horizontalPages = choice == 1;
+                            host.prefs.edit().putBoolean("notes.horizontal_pages", horizontalPages).apply();
+                            ink.horizontalPages = horizontalPages;
+                            setTool("Read");
+                            dialog.dismiss();
+                            host.message(horizontalPages ? "Swipe left or right to turn pages" : "Swipe up or down to turn pages");
+                        })
+                .setNegativeButton("Close", null).show();
     }
 
     private void movePage(int offset) {
@@ -1438,6 +1559,7 @@ final class NotebookEditor implements InkView.Listener {
     }
 
     private void applyPreferences() {
+        ink.horizontalPages = horizontalPages;
         ink.stylusOnly = host.prefs.getBoolean("stylus_only", false);
         ink.zoomLocked = host.prefs.getBoolean("zoom_lock", false);
         ink.scribble = host.prefs.getBoolean("scribble_erase", true);

@@ -8,6 +8,7 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -24,6 +25,8 @@ final class InkView extends View {
         void selectionChanged(int count);
         void zoomChanged(float zoom);
         void eraserFinished();
+        void dragPage(float offset);
+        void finishPageDrag(boolean turn);
     }
 
     private final Notebook.Page page;
@@ -57,6 +60,10 @@ final class InkView extends View {
     private float dragX, dragY;
     private int pointerId = -1;
     private boolean panning, moved, dragSelection, erasing;
+    private final int touchSlop;
+    private float pageStartX, pageStartY, pageDrag;
+    private boolean pageSwipeCandidate, pageSwiping;
+    boolean horizontalPages, pageTurning;
     private float eraseStartX, eraseStartY, eraseLastX, eraseLastY, eraseRadius;
     int eraseMode, eraseFilter;
     float eraseSize = 16;
@@ -81,6 +88,7 @@ final class InkView extends View {
         this.page = page;
         this.images = images;
         this.listener = listener;
+        touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         layer = page.layers.get(0).id;
         setContentDescription("Writing canvas");
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
@@ -366,6 +374,7 @@ final class InkView extends View {
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
+        if (pageTurning) return true;
         int action = event.getActionMasked();
         int index = event.getActionIndex();
         if (action == MotionEvent.ACTION_DOWN) {
@@ -378,6 +387,10 @@ final class InkView extends View {
             previousY = event.getY();
             moved = false;
             movingRuler = rulerHandle(previousX, previousY);
+            pageSwipeCandidate = finger && !movingRuler && (tool.equals("Read")
+                    || panning && !page.infinite() && zoom <= 1.01f);
+            pageStartX = event.getRawX();
+            pageStartY = event.getRawY();
             previousSpan = 0;
             dragX = dragY = 0;
             if (!panning && !movingRuler) begin(event);
@@ -387,6 +400,7 @@ final class InkView extends View {
             int active = event.findPointerIndex(pointerId);
             if (active < 0 || event.getToolType(active) == MotionEvent.TOOL_TYPE_STYLUS) return true;
             if (!panning && !erased.isEmpty()) finishChange();
+            if (pageSwiping) listener.finishPageDrag(false);
             resetGesture();
             pointerId = event.getPointerId(0);
             panning = true;
@@ -399,6 +413,7 @@ final class InkView extends View {
         if (action == MotionEvent.ACTION_MOVE) {
             int active = event.findPointerIndex(pointerId);
             if (active < 0) return true;
+            if ((pageSwipeCandidate || pageSwiping) && trackPageDrag(event)) return true;
             if (movingRuler) {
                 rulerX = Math.max(-getWidth() * .43f, Math.min(getWidth() * .43f,
                         rulerX + event.getX(active) - previousX));
@@ -419,7 +434,12 @@ final class InkView extends View {
         }
         if ((action == MotionEvent.ACTION_POINTER_UP && event.getPointerId(index) == pointerId)
                 || action == MotionEvent.ACTION_UP) {
-            if (!panning && !movingRuler) end(localX(event.getX(index)), localY(event.getY(index)), event.getPressure(index));
+            if (pageSwiping) {
+                float extent = horizontalPages ? getWidth() : getHeight();
+                listener.finishPageDrag(Math.abs(pageDrag) >= Math.max(touchSlop * 4f, extent * .16f));
+            } else if (!panning && !movingRuler) {
+                end(localX(event.getX(index)), localY(event.getY(index)), event.getPressure(index));
+            }
             resetGesture();
             if (action == MotionEvent.ACTION_POINTER_UP) {
                 int next = index == 0 ? 1 : 0;
@@ -444,10 +464,30 @@ final class InkView extends View {
         }
         if (action == MotionEvent.ACTION_CANCEL) {
             if (!erased.isEmpty()) finishChange();
+            if (pageSwiping) listener.finishPageDrag(false);
             resetGesture();
             invalidate();
             return true;
         }
+        return true;
+    }
+
+    private boolean trackPageDrag(MotionEvent event) {
+        float dx = event.getRawX() - pageStartX;
+        float dy = event.getRawY() - pageStartY;
+        float along = horizontalPages ? dx : dy;
+        float across = horizontalPages ? dy : dx;
+        if (!pageSwiping) {
+            if (Math.max(Math.abs(along), Math.abs(across)) < touchSlop) return true;
+            pageSwipeCandidate = false;
+            if (Math.abs(along) <= Math.abs(across)) {
+                if (tool.equals("Read")) moved = true;
+                return false;
+            }
+            pageSwiping = true;
+        }
+        pageDrag = along;
+        listener.dragPage(along);
         return true;
     }
 
@@ -628,6 +668,7 @@ final class InkView extends View {
         lasso.clear();
         erased.clear();
         pointerId = -1;
+        pageSwipeCandidate = pageSwiping = false;
         dragSelection = false;
         erasing = false;
         dragX = dragY = 0;
