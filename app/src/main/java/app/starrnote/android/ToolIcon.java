@@ -42,6 +42,54 @@ final class ToolIcon extends Drawable {
                 lines(c, 5, 8, 7, 8);
                 lines(c, 5, 12, 7, 12);
             }
+            case "Page turning" -> {
+                lines(c, 4, 8, 20, 8, 16, 4);
+                lines(c, 20, 8, 16, 12);
+                lines(c, 20, 16, 4, 16, 8, 12);
+                lines(c, 4, 16, 8, 20);
+            }
+            case "Add page", "Import pages", "Page template" -> {
+                lines(c, 14, 3, 6, 3, 6, 21, 19, 21, 19, 8, 14, 3, 14, 8, 19, 8);
+                if (name.equals("Add page")) {
+                    lines(c, 10, 14, 15, 14);
+                    lines(c, 12.5f, 11.5f, 12.5f, 16.5f);
+                } else if (name.equals("Import pages")) {
+                    lines(c, 12.5f, 10.5f, 12.5f, 17, 9.5f, 14);
+                    lines(c, 12.5f, 17, 15.5f, 14);
+                } else {
+                    lines(c, 9, 12, 16, 12);
+                    lines(c, 9, 16, 16, 16);
+                }
+            }
+            case "Copy page", "Duplicate page" -> {
+                c.drawRoundRect(8, 7, 20, 21, 1.5f, 1.5f, paint);
+                lines(c, 4, 17, 4, 3, 16, 3);
+                if (name.equals("Duplicate page")) {
+                    lines(c, 11, 14, 17, 14);
+                    lines(c, 14, 11, 14, 17);
+                }
+            }
+            case "Paste page" -> {
+                lines(c, 8, 5, 5, 5, 5, 21, 19, 21, 19, 5, 16, 5);
+                c.drawRoundRect(8, 3, 16, 7, 1.5f, 1.5f, paint);
+                lines(c, 9, 12, 15, 12);
+                lines(c, 9, 16, 15, 16);
+            }
+            case "Move page earlier", "Move page later" -> {
+                if (name.equals("Move page earlier")) {
+                    c.translate(0, 24);
+                    c.scale(1, -1);
+                }
+                lines(c, 12, 4, 12, 19, 7, 14);
+                lines(c, 12, 19, 17, 14);
+            }
+            case "Delete page" -> {
+                lines(c, 4, 6, 20, 6);
+                lines(c, 9, 6, 9, 3, 15, 3, 15, 6);
+                lines(c, 6, 6, 7, 21, 17, 21, 18, 6);
+                lines(c, 10, 10, 10, 17);
+                lines(c, 14, 10, 14, 17);
+            }
             case Brushes.PEN, Brushes.BALLPOINT, Brushes.GEL, Brushes.FINELINER, Brushes.FELT ->
                     lines(c, 4, 20, 6, 14, 16, 4, 20, 8, 10, 18, 4, 20, 6, 14, 10, 18);
             case Brushes.FOUNTAIN -> {

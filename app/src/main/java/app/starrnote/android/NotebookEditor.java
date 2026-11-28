@@ -14,6 +14,8 @@ import android.util.LruCache;
 import android.view.Gravity;
 import android.view.ContextThemeWrapper;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -700,40 +702,45 @@ final class NotebookEditor implements InkView.Listener {
                 }).setNegativeButton("Cancel", null).show();
     }
 
+    private record PageOption(String label, String icon, Runnable action) {
+        @Override public String toString() { return label; }
+    }
+
     private void pages() {
-        Map<String, Runnable> choices = new LinkedHashMap<>();
-        choices.put("Go to page", () -> pageBrowser.openDialog(this::go));
-        choices.put("Page turning", this::choosePageTurning);
-        if (canShowPageRail()) choices.put(showPageRail ? "Hide page sidebar" : "Show page sidebar", this::browsePages);
-        choices.put("Add page", this::newPage);
-        choices.put("Import pages", host::importPages);
-        choices.put("Copy page", () -> {
+        List<PageOption> choices = new ArrayList<>();
+        choices.add(new PageOption("Go to page", "Document grid", () -> pageBrowser.openDialog(this::go)));
+        choices.add(new PageOption("Page turning", "Page turning", this::choosePageTurning));
+        if (canShowPageRail()) choices.add(new PageOption(showPageRail ? "Hide page sidebar" : "Show page sidebar",
+                "Pages", this::browsePages));
+        choices.add(new PageOption("Add page", "Add page", this::newPage));
+        choices.add(new PageOption("Import pages", "Import pages", host::importPages));
+        choices.add(new PageOption("Copy page", "Copy page", () -> {
             try {
                 host.pageClipboard = note.current().copy();
                 host.message("Page copied");
             } catch (Exception failure) { host.message("Page could not be copied"); }
-        });
-        if (host.pageClipboard != null) choices.put("Paste page", () -> {
+        }));
+        if (host.pageClipboard != null) choices.add(new PageOption("Paste page", "Paste page", () -> {
             try {
                 note.pages.add(note.currentPage + 1, host.pageClipboard.copy());
                 changed();
                 go(note.currentPage + 1);
             } catch (Exception failure) { host.message("Page could not be pasted"); }
-        });
-        choices.put("Duplicate page", () -> {
+        }));
+        choices.add(new PageOption("Duplicate page", "Duplicate page", () -> {
             try {
                 note.pages.add(note.currentPage + 1, note.current().copy());
                 changed();
                 go(note.currentPage + 1);
             } catch (Exception failure) { host.message("Page could not be duplicated"); }
-        });
-        if (note.currentPage > 0) choices.put("Move page earlier", () -> movePage(-1));
-        if (note.currentPage < note.pages.size() - 1) choices.put("Move page later", () -> movePage(1));
-        choices.put("Name this page", () -> host.prompt("Page title", "Title", note.current().title, name -> {
+        }));
+        if (note.currentPage > 0) choices.add(new PageOption("Move page earlier", "Move page earlier", () -> movePage(-1)));
+        if (note.currentPage < note.pages.size() - 1) choices.add(new PageOption("Move page later", "Move page later", () -> movePage(1)));
+        choices.add(new PageOption("Name this page", "Insert text", () -> host.prompt("Page title", "Title", note.current().title, name -> {
             note.current().title = name;
             changed();
-        }));
-        if (note.current().background.isEmpty()) choices.put("Change paper template", () -> new AlertDialog.Builder(host)
+        })));
+        if (note.current().background.isEmpty()) choices.add(new PageOption("Change paper template", "Page template", () -> new AlertDialog.Builder(host)
                 .setTitle("Paper template").setItems(Notebook.PAPERS, (d, i) -> {
                     Notebook.Page page = note.current();
                     String paper = Notebook.PAPERS[i];
@@ -743,23 +750,37 @@ final class NotebookEditor implements InkView.Listener {
                         changed();
                         ink.fit();
                     });
-                }).show());
-        if (PlannerTemplates.isPlanner(note.current().paper)) choices.put("Planner theme", () -> {
+                }).show()));
+        if (PlannerTemplates.isPlanner(note.current().paper)) choices.add(new PageOption("Planner theme", "Ink color", () -> {
             Notebook.Page page = note.current();
             choosePaperTheme(page.paper, page.paperTheme, theme -> {
                 page.paperTheme = theme;
                 changed();
                 ink.invalidate();
             });
-        });
-        if (note.pages.size() > 1) choices.put("Delete page", () -> new AlertDialog.Builder(host).setTitle("Delete this page?")
+        }));
+        if (note.pages.size() > 1) choices.add(new PageOption("Delete page", "Delete page", () -> new AlertDialog.Builder(host).setTitle("Delete this page?")
                 .setPositiveButton("Delete", (d, i) -> {
                     note.pages.remove(note.currentPage);
                     note.current();
                     changed();
                     refreshPage();
-                }).setNegativeButton("Cancel", null).show());
-        host.options("Pages", choices);
+                }).setNegativeButton("Cancel", null).show()));
+        AlertDialog.Builder menu = new AlertDialog.Builder(host).setTitle("Pages");
+        ArrayAdapter<PageOption> rows = new ArrayAdapter<>(menu.getContext(), android.R.layout.select_dialog_item, choices) {
+            @Override public View getView(int position, View reused, ViewGroup parent) {
+                TextView row = (TextView) super.getView(position, reused, parent);
+                PageOption option = choices.get(position);
+                int tint = option.icon().equals("Delete page") ? 0xffb3261e : row.getCurrentTextColor();
+                row.setCompoundDrawablesRelativeWithIntrinsicBounds(new ToolIcon(option.icon(), tint, ui.dp(21)),
+                        null, null, null);
+                row.setCompoundDrawablePadding(ui.dp(14));
+                row.setMinHeight(ui.dp(48));
+                return row;
+            }
+        };
+        menu.setAdapter(rows, (dialog, item) -> choices.get(item).action().run())
+                .setNegativeButton("Close", null).show();
     }
 
     private void choosePageTurning() {
