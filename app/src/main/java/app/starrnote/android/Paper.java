@@ -1,10 +1,13 @@
 package app.starrnote.android;
 
 import android.graphics.Bitmap;
+import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.text.Layout;
 import android.text.StaticLayout;
@@ -26,8 +29,11 @@ final class Paper {
                 @Override protected int sizeOf(InkGeometry entry, android.graphics.Path path) { return entry.count; }
             };
     private final android.graphics.Rect clip = new android.graphics.Rect();
-    private float[] gridPoints = new float[0];
-    private int gridStartX, gridStartY, gridColumns, gridRows, gridStep;
+    private final Paint dots = new Paint(Paint.FILTER_BITMAP_FLAG);
+    private final Matrix gridScale = new Matrix();
+    private BitmapShader dotTile;
+    private int gridColor, gridStep;
+    InfiniteInk infiniteInk;
 
     private static final class InkGeometry {
         int count;
@@ -81,10 +87,11 @@ final class Paper {
             canvas.drawBitmap(pdfDetail, null, detailRegion, paint);
         }
         canvas.getClipBounds(clip);
+        List<Notebook.Mark> marks = infiniteInk == null || !page.infinite() ? page.marks : infiniteInk.visible(clip);
         for (Notebook.Layer layer : page.layers) {
             if (!layer.visible || layer.opacity == 0) continue;
             int composite = layer.opacity == 100 ? -1 : canvas.saveLayerAlpha(null, Math.round(layer.opacity * 2.55f));
-            for (Notebook.Mark mark : page.marks) {
+            for (Notebook.Mark mark : marks) {
                 if (!mark.layer.equals(layer.id) || mark.points.isEmpty()) continue;
                 if (Brushes.isInk(mark.tool) || Brushes.isMarker(mark.tool)) {
                     RectF bounds = geometry(mark).bounds;
@@ -135,34 +142,9 @@ final class Paper {
             }
             case "Dotted", "Infinite" -> {
                 canvas.getClipBounds(clip);
-                int step = 28 * Math.max(1, (Math.max(clip.width(), clip.height()) + 4200) / 4200);
-                int left = Math.floorDiv(clip.left - 14, step) * step + 14;
-                int top = Math.floorDiv(clip.top - 14, step) * step + 14;
-                int right = page.infinite() ? clip.right : Math.min(width, clip.right);
-                int bottom = page.infinite() ? clip.bottom : Math.min(height, clip.bottom);
-                int columns = Math.max(0, (right - left + step - 1) / step);
-                int rows = Math.max(0, (bottom - top + step - 1) / step);
-                int count = columns * rows * 2;
-                if (count == 0) break;
-                if (left != gridStartX || top != gridStartY || columns != gridColumns
-                        || rows != gridRows || step != gridStep) {
-                    if (gridPoints.length < count) gridPoints = new float[count];
-                    int at = 0;
-                    for (int col = 0; col < columns; col++) {
-                        for (int row = 0; row < rows; row++) {
-                            gridPoints[at++] = left + col * step;
-                            gridPoints[at++] = top + row * step;
-                        }
-                    }
-                    gridStartX = left;
-                    gridStartY = top;
-                    gridColumns = columns;
-                    gridRows = rows;
-                    gridStep = step;
-                }
-                paint.setStrokeCap(Paint.Cap.ROUND);
-                paint.setStrokeWidth(2.9f);
-                canvas.drawPoints(gridPoints, 0, count, paint);
+                int longest = Math.max(clip.width(), clip.height());
+                int step = 28 * Math.max(1, (int) Math.ceil(longest / 2800.0));
+                drawDots(canvas, step, paint.getColor());
             }
             case "Planner" -> {
                 heading(canvas, "Day planner", 44, 79, 38);
@@ -182,6 +164,26 @@ final class Paper {
                 }
             }
         }
+    }
+
+    private void drawDots(Canvas canvas, int step, int color) {
+        if (dotTile == null || color != gridColor) {
+            Bitmap tile = Bitmap.createBitmap(112, 112, Bitmap.Config.ARGB_8888);
+            Paint dot = new Paint(Paint.ANTI_ALIAS_FLAG);
+            dot.setColor(color);
+            new Canvas(tile).drawCircle(56, 56, 5.8f, dot);
+            dotTile = new BitmapShader(tile, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT);
+            dots.setShader(dotTile);
+            gridColor = color;
+            gridStep = 0;
+        }
+        if (step != gridStep) {
+            gridScale.setScale(step / 112f, step / 112f);
+            gridScale.postTranslate(14 - step / 2f, 14 - step / 2f);
+            dotTile.setLocalMatrix(gridScale);
+            gridStep = step;
+        }
+        canvas.drawRect(clip.left, clip.top, clip.right, clip.bottom, dots);
     }
 
     static boolean darkPaper(Notebook.Page page) {

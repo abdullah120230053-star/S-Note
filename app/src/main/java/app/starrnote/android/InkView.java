@@ -37,8 +37,9 @@ final class InkView extends View {
     private final Paper.Images images;
     private final Listener listener;
     private final Paint overlay = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final ArrayDeque<List<Notebook.Mark>> undo = new ArrayDeque<>();
-    private final ArrayDeque<List<Notebook.Mark>> redo = new ArrayDeque<>();
+    private record History(List<Notebook.Mark> snapshot, Notebook.Mark added, int position) {}
+    private final ArrayDeque<History> undo = new ArrayDeque<>();
+    private final ArrayDeque<History> redo = new ArrayDeque<>();
     private final Set<Notebook.Mark> selected = new LinkedHashSet<>();
     private final Set<Notebook.Mark> erased = new HashSet<>();
     private final List<Notebook.Point> lasso = new ArrayList<>();
@@ -88,6 +89,7 @@ final class InkView extends View {
         this.page = page;
         this.images = images;
         this.listener = listener;
+        if (page.infinite()) paper.infiniteInk = new InfiniteInk(page, paper);
         touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         layer = page.layers.get(0).id;
         setContentDescription("Writing canvas");
@@ -621,10 +623,13 @@ final class InkView extends View {
                 draft.points.add(rulerStroke ? snapped(x, y, pressure) : new Notebook.Point(x, y, pressure));
             }
             if (!scribble || !Brushes.isPen(draft.tool) || !eraseScribble(draft)) {
-                snapshot();
+                remember(new History(null, draft, -1));
                 page.marks.add(draft);
+                if (paper.infiniteInk != null) paper.infiniteInk.append(draft);
+                finishChange(false);
+            } else {
+                finishChange();
             }
-            finishChange();
         } else if (!erased.isEmpty()) {
             finishChange();
             listener.eraserFinished();
@@ -742,6 +747,7 @@ final class InkView extends View {
             erased.add(mark);
             page.marks.remove(i);
             if (eraseMode == 1) page.marks.addAll(i, pieces);
+            if (paper.infiniteInk != null) paper.infiniteInk.reset();
             paperChanged = true;
         }
     }
@@ -938,30 +944,53 @@ final class InkView extends View {
     void undo() { step(undo, redo); }
     void redo() { step(redo, undo); }
 
-    private void step(ArrayDeque<List<Notebook.Mark>> from, ArrayDeque<List<Notebook.Mark>> to) {
+    private void step(ArrayDeque<History> from, ArrayDeque<History> to) {
         if (from.isEmpty()) return;
-        to.push(new ArrayList<>(page.marks));
-        page.marks.clear();
-        page.marks.addAll(from.pop());
+        History state = from.pop();
+        if (state.snapshot() != null) {
+            to.push(new History(new ArrayList<>(page.marks), null, -1));
+            page.marks.clear();
+            page.marks.addAll(state.snapshot());
+        } else if (state.position() < 0) {
+            int position = page.marks.lastIndexOf(state.added());
+            if (position < 0) return;
+            page.marks.remove(position);
+            to.push(new History(null, state.added(), position));
+        } else {
+            page.marks.add(Math.min(state.position(), page.marks.size()), state.added());
+            to.push(new History(null, state.added(), -1));
+        }
         clearSelection();
         finishChange();
     }
 
     private void snapshot() {
         // Committed marks are replaced when edited, so undo history can share them.
-        undo.push(new ArrayList<>(page.marks));
+        remember(new History(new ArrayList<>(page.marks), null, -1));
+    }
+
+    private void remember(History state) {
+        undo.push(state);
         if (undo.size() > 30) undo.removeLast();
         redo.clear();
     }
 
     void forgetLayerHistory(String layerId) {
-        for (List<Notebook.Mark> state : undo) state.removeIf(mark -> layerId.equals(mark.layer));
-        for (List<Notebook.Mark> state : redo) state.removeIf(mark -> layerId.equals(mark.layer));
+        forgetLayer(undo, layerId);
+        forgetLayer(redo, layerId);
+    }
+
+    private void forgetLayer(ArrayDeque<History> history, String layerId) {
+        history.removeIf(state -> {
+            if (state.snapshot() == null) return layerId.equals(state.added().layer);
+            state.snapshot().removeIf(mark -> layerId.equals(mark.layer));
+            return false;
+        });
     }
 
     void keepLayerInHistory(List<Notebook.Mark> marks) {
-        for (List<Notebook.Mark> state : undo) state.addAll(marks);
-        for (List<Notebook.Mark> state : redo) state.addAll(marks);
+        for (History state : undo) if (state.snapshot() != null) state.snapshot().addAll(marks);
+        for (History state : redo) if (state.snapshot() != null) state.snapshot().addAll(marks);
     }
 
     private List<Notebook.Mark> copy(List<Notebook.Mark> marks) {
@@ -978,6 +1007,11 @@ final class InkView extends View {
     }
 
     private void finishChange() {
+        finishChange(true);
+    }
+
+    private void finishChange(boolean resetIndex) {
+        if (resetIndex && paper.infiniteInk != null) paper.infiniteInk.reset();
         listener.changed();
         invalidate();
     }

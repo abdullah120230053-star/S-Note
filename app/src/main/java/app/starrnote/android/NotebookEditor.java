@@ -358,8 +358,8 @@ final class NotebookEditor implements InkView.Listener {
             toolButton("Undo", "Undo", () -> ink.undo());
             toolButton("Redo", "Redo", () -> ink.redo());
         }
+        toolButton("Pen box", "Pen favorites", this::penBox);
         if (compact && verticalTools) {
-            toolButton("Pen box", "Pen box", this::penBox);
             for (int index : new int[]{0, 3, 2, 1, 4}) {
                 int swatch = COLORS[index];
                 View chip = new View(host);
@@ -789,7 +789,7 @@ final class NotebookEditor implements InkView.Listener {
         choices.put("Pen styles", () -> brushOptions(pen));
         choices.put("Pencil styles", () -> brushOptions(pencil));
         choices.put("Highlighter and marker styles", () -> brushOptions(highlighter));
-        choices.put("Pen box", this::penBox);
+        choices.put("Pen favorites", this::penBox);
         choices.put("Eraser settings", this::eraserSettings);
         choices.put("Ruler", this::ruler);
         choices.put("Laser pointer", this::laser);
@@ -876,7 +876,7 @@ final class NotebookEditor implements InkView.Listener {
         form.addView(sample, 1, new LinearLayout.LayoutParams(-1, ui.dp(45)));
         Runnable refreshColor = compact ? addBrushColors(form, sample) : sample::invalidate;
         if (!compact) ui.append(form, ui.button("Color palette", false, () -> colors(refreshColor)), 8);
-        TextView savePreset = ui.button("Add to pen box", !compact, this::saveBrush);
+        TextView savePreset = ui.button("Add to favorites", !compact, this::saveBrush);
         if (compact) {
             savePreset.setTextColor(ui.lime);
             savePreset.setBackground(ui.ripple(ui.surface, 10, ui.lime));
@@ -1011,45 +1011,121 @@ final class NotebookEditor implements InkView.Listener {
         }
         saved.add(preset);
         host.prefs.edit().putStringSet("brush.box", saved).apply();
-        host.message("Saved to pen box");
+        host.message("Saved to pen favorites");
     }
 
     private void penBox() {
-        Map<String, Runnable> actions = new LinkedHashMap<>();
-        List<String> presets = new ArrayList<>(savedBrushes());
-        List<String> names = new ArrayList<>();
-        for (String value : presets) {
+        penBox(false);
+    }
+
+    private record BrushPreset(String key, String tool, int color, float width, int opacity,
+                               int smoothing, int pressure, int style) {
+        static BrushPreset read(String value) {
             String[] parts = value.split("\\|");
-            if (parts.length < 5 || parts.length > 7) continue;
-            int pressure = parts.length >= 6 ? Integer.parseInt(parts[5]) : 100;
-            int style = parts.length == 7 ? Integer.parseInt(parts[6]) : 0;
-            String label = parts[0] + String.format(java.util.Locale.ROOT, " · #%06X", Integer.parseInt(parts[1]) & 0xffffff)
-                    + " · " + parts[2] + " px · " + parts[3] + "% ink · " + parts[4] + "% smoothing"
-                    + (Brushes.adjustablePressure(parts[0]) ? " · " + pressure + "% pressure" : "")
-                    + (Brushes.BALLPOINT.equals(parts[0]) ? " · " + BALLPOINT_STYLES[style] : "");
-            names.add(label);
-            actions.put(label, () -> {
-                setTool(parts[0]);
-                ink.inkColor = color = Integer.parseInt(parts[1]);
-                ink.width = width = Float.parseFloat(parts[2]);
-                ink.inkOpacity = Integer.parseInt(parts[3]);
-                ink.stabilization = Integer.parseInt(parts[4]);
-                ink.pressureSensitivity = pressure;
-                if (Brushes.BALLPOINT.equals(parts[0])) ink.ballpointStyle = style;
-                persistBrush();
-            });
+            if (parts.length < 5 || parts.length > 7) return null;
+            if (!Brushes.isInk(parts[0]) && !Brushes.isMarker(parts[0])) return null;
+            try {
+                float width = Float.parseFloat(parts[2]);
+                if (!Float.isFinite(width) || width <= 0) return null;
+                int style = parts.length == 7 ? Integer.parseInt(parts[6]) : 0;
+                return new BrushPreset(value, parts[0], Integer.parseInt(parts[1]), width,
+                        Integer.parseInt(parts[3]), Integer.parseInt(parts[4]),
+                        parts.length >= 6 ? Integer.parseInt(parts[5]) : 100,
+                        Math.max(0, Math.min(BALLPOINT_STYLES.length - 1, style)));
+            } catch (NumberFormatException invalidPreset) {
+                return null;
+            }
         }
-        if (actions.isEmpty()) {
-            host.message("Save a preset from Brush settings to fill your pen box");
+    }
+
+    private void penBox(boolean removing) {
+        List<BrushPreset> presets = new ArrayList<>();
+        for (String value : savedBrushes()) {
+            BrushPreset preset = BrushPreset.read(value);
+            if (preset != null) presets.add(preset);
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(panelContext())
+                .setTitle(removing ? "Remove a favorite" : "Pen favorites");
+        if (presets.isEmpty()) {
+            builder.setMessage("Save a brush from Brush settings to use it here.")
+                    .setPositiveButton("Brush settings", (dialog, which) -> brushOptions(toolbarTool(pen)))
+                    .setNegativeButton("Close", null).show();
             return;
         }
-        actions.put("Remove a saved brush", () -> new AlertDialog.Builder(host).setTitle("Remove preset")
-                .setItems(names.toArray(new String[0]), (d, index) -> {
+        LinearLayout cards = ui.column();
+        ui.pad(cards, 17, 6, 17, 6);
+        ScrollView scroll = new ScrollView(host);
+        scroll.addView(cards);
+        builder.setView(scroll).setNegativeButton("Close", null);
+        builder.setNeutralButton(removing ? "Done" : "Manage", (dialog, which) -> penBox(!removing));
+        AlertDialog dialog = builder.create();
+        for (int i = 0; i < presets.size(); i += 3) {
+            LinearLayout row = ui.row();
+            cards.addView(row, new LinearLayout.LayoutParams(-1, -2));
+            for (int column = 0; column < 3; column++) {
+                LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, -2, 1);
+                size.setMargins(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3));
+                if (i + column >= presets.size()) {
+                    row.addView(new View(host), size);
+                    continue;
+                }
+                BrushPreset preset = presets.get(i + column);
+                String weight = String.format(java.util.Locale.ROOT, "%.1f px", preset.width());
+                android.widget.Button card = new android.widget.Button(panelContext());
+                card.setAllCaps(false);
+                card.setText(preset.tool() + "\n" + weight);
+                card.setTextColor(ui.ink);
+                card.setTextSize(12);
+                card.setMinHeight(ui.dp(84));
+                ui.pad(card, 5, 8, 5, 8);
+                card.setBackground(ui.ripple(ui.surface, 10, ui.line));
+                ToolIcon icon = new ToolIcon(preset.tool(), preset.color(), ui.dp(24));
+                android.graphics.drawable.Drawable preview = new android.graphics.drawable.LayerDrawable(
+                        new android.graphics.drawable.Drawable[]{ui.block(0xfff5f2e8, 8, 0), icon});
+                preview.setBounds(0, 0, ui.dp(32), ui.dp(32));
+                card.setCompoundDrawables(null, preview, null, null);
+                card.setCompoundDrawablePadding(ui.dp(4));
+                String detail = preset.tool() + ", " + weight
+                        + String.format(java.util.Locale.ROOT, ", color #%06X", preset.color() & 0xffffff)
+                        + ", " + preset.opacity() + "% opacity, " + preset.smoothing() + "% smoothing"
+                        + (Brushes.adjustablePressure(preset.tool()) ? ", " + preset.pressure() + "% pressure" : "")
+                        + (Brushes.BALLPOINT.equals(preset.tool()) ? ", " + BALLPOINT_STYLES[preset.style()] : "");
+                card.setContentDescription(removing ? "Remove " + detail : detail);
+                card.setTooltipText(detail);
+                card.setOnClickListener(v -> {
+                    dialog.dismiss();
+                    if (removing) removeFavorite(preset);
+                    else {
+                        applyFavorite(preset);
+                        host.message(preset.tool() + " selected");
+                    }
+                });
+                row.addView(card, size);
+            }
+        }
+        dialog.show();
+    }
+
+    private void applyFavorite(BrushPreset preset) {
+        setTool(preset.tool());
+        ink.inkColor = color = preset.color();
+        ink.width = width = preset.width();
+        ink.inkOpacity = preset.opacity();
+        ink.stabilization = preset.smoothing();
+        ink.pressureSensitivity = preset.pressure();
+        if (Brushes.BALLPOINT.equals(preset.tool())) ink.ballpointStyle = preset.style();
+        persistBrush();
+    }
+
+    private void removeFavorite(BrushPreset preset) {
+        new AlertDialog.Builder(panelContext()).setTitle("Remove this favorite?")
+                .setMessage(preset.tool()).setNegativeButton("Cancel", (dialog, which) -> penBox(true))
+                .setPositiveButton("Remove", (dialog, which) -> {
                     java.util.Set<String> saved = savedBrushes();
-                    saved.remove(presets.get(index));
+                    saved.remove(preset.key());
                     host.prefs.edit().putStringSet("brush.box", saved).apply();
-                }).setNegativeButton("Cancel", null).show());
-        host.options("Pen box", actions);
+                    penBox(!saved.isEmpty());
+                }).show();
     }
 
     private void setColor(int selected) {

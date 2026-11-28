@@ -97,7 +97,8 @@ final class ToolIcon extends Drawable {
             case "Document grid" -> {
                 for (int x : new int[]{4, 13}) for (int y : new int[]{4, 13}) c.drawRect(x, y, x + 7, y + 7, paint);
             }
-            case "Pen box" -> lines(c, 3, 9, 21, 9, 20, 20, 4, 20, 3, 9, 6, 5, 18, 5, 21, 9, 14, 9, 14, 13, 10, 13, 10, 9);
+            case "Pen box" -> lines(c, 12, 3, 14.8f, 8.8f, 21.2f, 9.7f, 16.6f, 14.2f,
+                    17.7f, 20.6f, 12, 17.6f, 6.3f, 20.6f, 7.4f, 14.2f, 2.8f, 9.7f, 9.2f, 8.8f, 12, 3);
             case "Ink color" -> {
                 lines(c, 12, 3, 5, 13, 5, 17, 8, 21, 16, 21, 19, 17, 19, 13, 12, 3);
                 lines(c, 8, 15, 8, 17, 10, 19);
