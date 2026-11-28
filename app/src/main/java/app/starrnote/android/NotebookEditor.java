@@ -775,6 +775,9 @@ final class NotebookEditor implements InkView.Listener {
                 row.setCompoundDrawablesRelativeWithIntrinsicBounds(new ToolIcon(option.icon(), tint, ui.dp(21)),
                         null, null, null);
                 row.setCompoundDrawablePadding(ui.dp(14));
+                row.setTextSize(16);
+                row.setPaddingRelative(ui.dp(24), 0, ui.dp(24), 0);
+                row.setMinimumHeight(ui.dp(48));
                 row.setMinHeight(ui.dp(48));
                 return row;
             }
