@@ -23,7 +23,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -45,10 +44,13 @@ public final class PlayBooksActivity extends Activity {
     private TextView title, status, mode, previous, next;
     private SheetView sheet;
     private String bookId;
-    private BookPages loaded;
+    private BookPages loaded, adjacentSection;
+    private int pendingSection = -1, unavailableSection = -1;
     private boolean spread, square, turning, busy, importing;
     private float pendingTurn;
-    private static final String[] PAGE_TURNS = {"3D flip", "Slide", "Scroll"};
+    private static final int SLIDE = 1, CONTINUOUS = 2;
+    private static final String[] PAGE_TURNS = {"Page-by-page turning (3D flip)",
+            "Page-by-page turning (horizontal slide)", "Continuous vertical view"};
     private int pageTurn;
     private volatile int generation;
     private int page;
@@ -140,9 +142,9 @@ public final class PlayBooksActivity extends Activity {
             File file = new File(folder, id + ".epub");
             try {
                 if (!folder.isDirectory() && !folder.mkdirs()) throw new IOException("Book storage is unavailable.");
-                try (InputStream in = getContentResolver().openInputStream(uri); FileOutputStream out = new FileOutputStream(file)) {
+                try (InputStream in = getContentResolver().openInputStream(uri)) {
                     if (in == null) throw new IOException("The selected book is unavailable.");
-                    Library.copy(in, out, 96L * 1024 * 1024);
+                    EpubImport.copy(in, file);
                 }
                 String name;
                 try (EpubBook book = new EpubBook(file)) { name = book.title; }
@@ -214,8 +216,14 @@ public final class PlayBooksActivity extends Activity {
                 .setSingleChoiceItems(PAGE_TURNS, pageTurn, (dialog, which) -> {
                     pageTurn = which;
                     books.edit().putInt("pageTurn", which).apply();
+                    sheet.setContentDescription(which == CONTINUOUS ? "Book pages. Scroll up or down." : "Book pages. Swipe to turn.");
+                    sheet.waitingDistance = 0;
                     dialog.dismiss();
-                    if (loaded != null) showPage();
+                    if (loaded != null) {
+                        showPage();
+                        if (pageTurn == CONTINUOUS) prepareAdjacent(1);
+                        else adjacentSection = null;
+                    }
                 }).setNegativeButton("Cancel", null).show();
     }
 
@@ -237,6 +245,9 @@ public final class PlayBooksActivity extends Activity {
         if (bookId == null || sheet.getWidth() == 0 || sheet.getHeight() == 0) return;
         String id = bookId;
         int token = ++generation;
+        adjacentSection = null;
+        pendingSection = unavailableSection = -1;
+        sheet.waitingDistance = 0;
         busy = true;
         status.setText("Laying out pages…");
         updateControls();
@@ -244,46 +255,20 @@ public final class PlayBooksActivity extends Activity {
         int padding = sheet.padding();
         float size = textSize * getResources().getDisplayMetrics().scaledDensity;
         work.execute(() -> {
-            try (EpubBook book = new EpubBook(new File(folder, id + ".epub"))) {
+            try {
                 if (generation != token) return;
-                int section = Math.max(0, Math.min(chapter, book.chapters.size() - 1));
-                int contentWidth = Math.max(1, width - 2 * padding), contentHeight = Math.max(1, height - 2 * padding);
-                String source = HIDDEN.matcher(book.chapter(section)).replaceAll("");
-                if (source.length() > 650_000) throw new IOException("This EPUB section is too large to lay out.");
-                int[] remainingImages = {18};
-                CharSequence text = Html.fromHtml(source, Html.FROM_HTML_MODE_LEGACY,
-                        href -> remainingImages[0]-- > 0 ? book.illustration(section, href,
-                                Math.min(640, contentWidth), Math.min(700, Math.max(1, contentHeight - 48))) : null, null);
-                TextPaint ink = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
-                ink.setColor(0xff27251f);
-                ink.setTextSize(size);
-                ink.setTypeface(Typeface.create("serif", Typeface.NORMAL));
-                StaticLayout layout = StaticLayout.Builder.obtain(text, 0, text.length(), ink, contentWidth)
-                        .setIncludePad(false).setLineSpacing(0, 1.18f)
-                        .setAlignment(Layout.Alignment.ALIGN_NORMAL).build();
-                ArrayList<Integer> starts = new ArrayList<>();
-                int total = layout.getLineCount();
-                for (int start = 0; start < total;) {
-                    starts.add(start);
-                    int limit = layout.getLineTop(start) + contentHeight;
-                    int end = Math.max(start + 1, Math.min(total, layout.getLineForVertical(limit)));
-                    while (end < total && layout.getLineBottom(end) <= limit) end++;
-                    start = end;
-                }
-                if (starts.isEmpty()) starts.add(0);
-                starts.add(total);
-                int[] breaks = starts.stream().mapToInt(Integer::intValue).toArray();
-                BookPages result = new BookPages(book.title, book.rightToLeft, section,
-                        book.chapters.size(), layout, breaks, width, height);
+                BookPages result = layoutSection(id, chapter, width, height, padding, size);
                 runOnUiThread(() -> {
                     if (!current(token)) return;
                     loaded = result;
-                    int line = layout.getLineForOffset(Math.min(offset, text.length()));
+                    StaticLayout layout = result.layout();
+                    int line = layout.getLineForOffset(Math.min(offset, layout.getText().length()));
                     page = 0;
-                    while (page + 1 < result.count() && breaks[page + 1] <= line) page++;
+                    while (page + 1 < result.count() && result.breaks()[page + 1] <= line) page++;
                     if (spread) page -= page % 2;
                     busy = false;
                     showPage();
+                    if (pageTurn == CONTINUOUS) prepareAdjacent(1);
                     if (pendingTurn != 0) {
                         float side = pendingTurn;
                         pendingTurn = 0;
@@ -291,6 +276,83 @@ public final class PlayBooksActivity extends Activity {
                     }
                 });
             } catch (Exception failure) { report(token, failure); }
+        });
+    }
+
+    private BookPages layoutSection(String id, int chapter, int width, int height, int padding, float size) throws Exception {
+        try (EpubBook book = new EpubBook(new File(folder, id + ".epub"))) {
+            int section = Math.max(0, Math.min(chapter, book.chapters.size() - 1));
+            int contentWidth = Math.max(1, width - 2 * padding), contentHeight = Math.max(1, height - 2 * padding);
+            String source = HIDDEN.matcher(book.chapter(section)).replaceAll("");
+            if (source.length() > 650_000) throw new IOException("This EPUB section is too large to lay out.");
+            int[] remainingImages = {18};
+            CharSequence text = Html.fromHtml(source, Html.FROM_HTML_MODE_LEGACY,
+                    href -> remainingImages[0]-- > 0 ? book.illustration(section, href,
+                            Math.min(640, contentWidth), Math.min(700, Math.max(1, contentHeight - 48))) : null, null);
+            TextPaint ink = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.SUBPIXEL_TEXT_FLAG);
+            ink.setColor(0xff27251f);
+            ink.setTextSize(size);
+            ink.setTypeface(Typeface.create("serif", Typeface.NORMAL));
+            StaticLayout layout = StaticLayout.Builder.obtain(text, 0, text.length(), ink, contentWidth)
+                    .setIncludePad(false).setLineSpacing(0, 1.18f)
+                    .setAlignment(Layout.Alignment.ALIGN_NORMAL).build();
+            ArrayList<Integer> starts = new ArrayList<>();
+            int total = layout.getLineCount();
+            for (int start = 0; start < total;) {
+                starts.add(start);
+                int limit = layout.getLineTop(start) + contentHeight;
+                int end = Math.max(start + 1, Math.min(total, layout.getLineForVertical(limit)));
+                while (end < total && layout.getLineBottom(end) <= limit) end++;
+                start = end;
+            }
+            if (starts.isEmpty()) starts.add(0);
+            starts.add(total);
+            return new BookPages(book.title, book.rightToLeft, section, book.chapters.size(), layout,
+                    starts.stream().mapToInt(Integer::intValue).toArray(), width, height);
+        }
+    }
+
+    private void prepareAdjacent(int direction) {
+        BookPages origin = loaded;
+        int section = origin.chapter() + direction;
+        if (section < 0 || section >= origin.chapters() || pendingSection != -1 || unavailableSection == section
+                || (adjacentSection != null && adjacentSection.chapter() == section)) return;
+        pendingSection = section;
+        String id = bookId;
+        int token = generation, padding = sheet.padding();
+        float size = textSize * getResources().getDisplayMetrics().scaledDensity;
+        work.execute(() -> {
+            BookPages neighbor = null;
+            try {
+                if (generation != token) return;
+                neighbor = layoutSection(id, section, origin.width(), origin.height(), padding, size);
+            } catch (Exception unavailable) {
+                // The Next/Previous buttons can still retry this section explicitly.
+            }
+            BookPages result = neighbor;
+            runOnUiThread(() -> {
+                if (!current(token)) return;
+                pendingSection = -1;
+                if (pageTurn != CONTINUOUS || origin != loaded) {
+                    if (pageTurn == CONTINUOUS && sheet.waitingDistance != 0) {
+                        prepareAdjacent(sheet.waitingDistance > 0 ? 1 : -1);
+                    }
+                    return;
+                }
+                if (result == null) {
+                    unavailableSection = section;
+                    if (sheet.waitingDistance * direction > 0) {
+                        status.setText("Section unavailable");
+                        sheet.waitingDistance = 0;
+                    } else if (sheet.waitingDistance != 0) {
+                        prepareAdjacent(-direction);
+                    }
+                } else {
+                    adjacentSection = result;
+                    if (sheet.waitingDistance != 0) sheet.scrollByDistance(0);
+                    sheet.invalidate();
+                }
+            });
         });
     }
 
@@ -322,7 +384,7 @@ public final class PlayBooksActivity extends Activity {
         int section = loaded.chapter();
         boolean nextSection = target < 0 || target >= loaded.count();
         if (nextSection && (section + direction < 0 || section + direction >= loaded.chapters())) return;
-        if (pageTurn == 2) {
+        if (pageTurn == CONTINUOUS) {
             if (nextSection) request(section + direction, direction > 0 ? 0 : Integer.MAX_VALUE);
             else { page = target; showPage(); }
             return;
@@ -332,7 +394,7 @@ public final class PlayBooksActivity extends Activity {
         sheet.setCameraDistance(8000 * getResources().getDisplayMetrics().density);
         sheet.setPivotX(side > 0 ? sheet.getWidth() * .18f : sheet.getWidth() * .82f);
         android.view.ViewPropertyAnimator outgoing = sheet.animate().alpha(.55f).setDuration(135);
-        if (pageTurn == 1) outgoing.translationX(-sheet.getWidth() * .36f * side);
+        if (pageTurn == SLIDE) outgoing.translationX(-sheet.getWidth() * .36f * side);
         else outgoing.rotationY(-74 * side);
         outgoing.withEndAction(() -> {
             if (nextSection) {
@@ -347,13 +409,14 @@ public final class PlayBooksActivity extends Activity {
     }
 
     private void finishTurn(float side) {
-        if (pageTurn == 1) sheet.setTranslationX(sheet.getWidth() * .36f * side);
+        if (pageTurn == SLIDE) sheet.setTranslationX(sheet.getWidth() * .36f * side);
         else sheet.setRotationY(74 * side);
         sheet.animate().rotationY(0).translationX(0).alpha(1).setDuration(155)
                 .withEndAction(() -> turning = false).start();
     }
 
     private void showPage() {
+        sheet.waitingDistance = 0;
         sheet.scrollPosition = page / (spread ? 2 : 1) * (float) sheet.pagePitch();
         updatePosition();
     }
@@ -388,11 +451,12 @@ public final class PlayBooksActivity extends Activity {
     private final class SheetView extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private float down;
-        private float downY, originalScroll, scrollPosition;
+        private float lastY, scrollPosition, waitingDistance;
+        private boolean dragging;
 
         SheetView() {
             super(PlayBooksActivity.this);
-            setContentDescription("Book pages. Swipe to turn.");
+            setContentDescription(pageTurn == CONTINUOUS ? "Book pages. Scroll up or down." : "Book pages. Swipe to turn.");
         }
 
         int padding() { return Math.max(5, Math.min(ui.dp(24), Math.min(paperWidth(), paperHeight()) / 8)); }
@@ -407,66 +471,104 @@ public final class PlayBooksActivity extends Activity {
 
         int pagePitch() { return paperHeight() + ui.dp(12); }
 
+        int rows(BookPages section) { return spread ? (section.count() + 1) / 2 : section.count(); }
+
         @Override protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) { post(PlayBooksActivity.this::reflow); }
 
         @Override protected void onDraw(Canvas canvas) {
             int width = paperWidth(), height = paperHeight(), leaves = spread ? 2 : 1;
             float left = (getWidth() - width * leaves) / 2f, top = (getHeight() - height) / 2f;
-            if (pageTurn == 2 && loaded != null) {
-                int pitch = pagePitch(), first = Math.max(0, (int) (scrollPosition / pitch));
-                for (int row = first; row * leaves < loaded.count(); row++) {
-                    float y = top + row * pitch - scrollPosition;
-                    if (y >= getHeight()) break;
-                    drawPages(canvas, row * leaves, width, height, leaves, left, y);
+            if (pageTurn == CONTINUOUS && loaded != null) {
+                float currentTop = top - scrollPosition;
+                drawSection(canvas, loaded, width, height, leaves, left, currentTop);
+                if (adjacentSection != null) {
+                    int shift = adjacentSection.chapter() < loaded.chapter() ? -rows(adjacentSection) : rows(loaded);
+                    drawSection(canvas, adjacentSection, width, height, leaves, left, currentTop + shift * pagePitch());
                 }
-            } else drawPages(canvas, page, width, height, leaves, left, top);
+            } else drawPages(canvas, loaded, page, width, height, leaves, left, top);
         }
 
-        private void drawPages(Canvas canvas, int first, int width, int height, int leaves, float left, float top) {
+        private void drawSection(Canvas canvas, BookPages section, int width, int height, int leaves, float left, float top) {
+            int pitch = pagePitch();
+            int first = Math.max(0, (int) Math.floor(-top / pitch));
+            for (int row = first; row < rows(section); row++) {
+                float y = top + row * pitch;
+                if (y >= getHeight()) break;
+                drawPages(canvas, section, row * leaves, width, height, leaves, left, y);
+            }
+        }
+
+        private void drawPages(Canvas canvas, BookPages section, int first, int width, int height,
+                               int leaves, float left, float top) {
             for (int slot = 0; slot < leaves; slot++) {
                 float x = left + slot * width;
                 paint.setColor(PAPER);
                 canvas.drawRoundRect(x + 1, top, x + width - 1, top + height, ui.dp(6), ui.dp(6), paint);
-                if (loaded == null || loaded.width() != width || loaded.height() != height) continue;
-                int index = first + (loaded.rtl() ? leaves - slot - 1 : slot);
-                if (index >= loaded.count()) continue;
-                int start = loaded.layout().getLineTop(loaded.breaks()[index]);
-                int end = loaded.layout().getLineTop(loaded.breaks()[index + 1]);
+                if (section == null || section.width() != width || section.height() != height) continue;
+                int index = first + (section.rtl() ? leaves - slot - 1 : slot);
+                if (index >= section.count()) continue;
+                int start = section.layout().getLineTop(section.breaks()[index]);
+                int end = section.layout().getLineTop(section.breaks()[index + 1]);
                 int inset = padding();
                 canvas.save();
                 canvas.clipRect(x + inset, top + inset, x + width - inset,
                         top + inset + Math.min(end - start, height - 2 * inset));
                 canvas.translate(x + inset, top + inset - start);
-                loaded.layout().draw(canvas);
+                section.layout().draw(canvas);
                 canvas.restore();
             }
+        }
+
+        void scrollByDistance(float delta) {
+            int pitch = pagePitch();
+            float desired = scrollPosition + waitingDistance + delta;
+            float sectionEnd = rows(loaded) * (float) pitch;
+            boolean crossed = false;
+            if (adjacentSection != null) {
+                int relative = adjacentSection.chapter() - loaded.chapter();
+                if ((relative < 0 && desired < 0) || (relative > 0 && desired >= sectionEnd)) {
+                    desired += relative < 0 ? rows(adjacentSection) * (float) pitch : -sectionEnd;
+                    BookPages prior = loaded;
+                    loaded = adjacentSection;
+                    adjacentSection = prior;
+                    sectionEnd = rows(loaded) * (float) pitch;
+                    crossed = true;
+                }
+            }
+            boolean nextReady = adjacentSection != null && adjacentSection.chapter() > loaded.chapter();
+            float max = nextReady ? sectionEnd : sectionEnd - pitch;
+            scrollPosition = Math.max(0, Math.min(max, desired));
+            int direction = desired < scrollPosition ? -1 : 1;
+            int target = loaded.chapter() + direction;
+            waitingDistance = target >= 0 && target < loaded.chapters() && target != unavailableSection
+                    ? Math.max(-pitch, Math.min(pitch, desired - scrollPosition)) : 0;
+            if (waitingDistance != 0) prepareAdjacent(direction);
+            else if (delta > 0 && scrollPosition >= sectionEnd - 2 * pitch) prepareAdjacent(1);
+            else if (delta < 0 && scrollPosition < pitch) prepareAdjacent(-1);
+            page = Math.min(rows(loaded) - 1, Math.round(scrollPosition / pitch)) * (spread ? 2 : 1);
+            if (crossed || (!dragging && delta == 0)) updatePosition();
+            else postInvalidateOnAnimation();
         }
 
         @Override public boolean onTouchEvent(MotionEvent event) {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                 down = event.getX();
-                downY = event.getY();
-                originalScroll = scrollPosition;
+                lastY = event.getY();
+                dragging = true;
                 return true;
             }
-            if (pageTurn == 2 && loaded != null && !busy) {
-                int leaves = spread ? 2 : 1;
-                float max = (loaded.count() - 1) / leaves * pagePitch();
-                float desired = originalScroll + downY - event.getY();
+            if (pageTurn == CONTINUOUS && loaded != null && !busy) {
                 if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-                    scrollPosition = Math.max(0, Math.min(max, desired));
-                    postInvalidateOnAnimation();
+                    float y = event.getY();
+                    scrollByDistance(lastY - y);
+                    lastY = y;
                 } else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                    page = Math.min((loaded.count() - 1) / leaves,
-                            Math.round(scrollPosition / pagePitch())) * leaves;
+                    dragging = false;
                     updatePosition();
-                    if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-                        if (desired < -ui.dp(42)) turn(-1);
-                        else if (desired > max + ui.dp(42)) turn(1);
-                    }
                 }
                 return true;
             }
+            dragging = false;
             if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                 float delta = event.getX() - down;
                 int direction = Math.abs(delta) > ui.dp(36) ? (delta < 0 ? 1 : -1)

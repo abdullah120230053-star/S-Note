@@ -16,6 +16,7 @@ import java.util.zip.ZipFile;
 
 final class EpubBook implements AutoCloseable {
     private static final int MAX_ENTRY = 6 * 1024 * 1024;
+    private static final int MAX_ILLUSTRATION = 32 * 1024 * 1024;
     private final ZipFile zip;
     final String title;
     final boolean rightToLeft;
@@ -82,7 +83,7 @@ final class EpubBook implements AutoCloseable {
         try {
             android.graphics.BitmapFactory.Options sizing = new android.graphics.BitmapFactory.Options();
             sizing.inJustDecodeBounds = true;
-            try (InputStream stream = entry(name)) {
+            try (InputStream stream = entry(name, MAX_ILLUSTRATION)) {
                 android.graphics.BitmapFactory.decodeStream(stream, null, sizing);
             }
             if (sizing.outWidth <= 0 || sizing.outHeight <= 0) return null;
@@ -90,7 +91,7 @@ final class EpubBook implements AutoCloseable {
             options.inSampleSize = 1;
             while (sizing.outWidth / options.inSampleSize > maxWidth
                     || sizing.outHeight / options.inSampleSize > maxHeight) options.inSampleSize *= 2;
-            try (InputStream stream = entry(name)) {
+            try (InputStream stream = entry(name, MAX_ILLUSTRATION)) {
                 android.graphics.Bitmap image = android.graphics.BitmapFactory.decodeStream(stream, null, options);
                 if (image == null) return null;
                 android.graphics.drawable.BitmapDrawable drawable = new android.graphics.drawable.BitmapDrawable(
@@ -104,8 +105,12 @@ final class EpubBook implements AutoCloseable {
     }
 
     private InputStream entry(String name) throws IOException {
+        return entry(name, MAX_ENTRY);
+    }
+
+    private InputStream entry(String name, int sizeLimit) throws IOException {
         ZipEntry entry = zip.getEntry(name);
-        if (entry == null || entry.isDirectory() || entry.getSize() > MAX_ENTRY) {
+        if (entry == null || entry.isDirectory() || entry.getSize() > sizeLimit) {
             throw new IOException("An EPUB entry is missing or too large.");
         }
         return zip.getInputStream(entry);
